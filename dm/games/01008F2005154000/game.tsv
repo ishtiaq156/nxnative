@@ -1,5 +1,6 @@
 # South Park: The Fractured But Whole, update 1.05 (v327680), Ubisoft Snowdrop on NVN, SDK 3.5.1.
-# Experimental iPhone-sized virtual address layout. The ten exact build-gated cuts are not gameplay-validated; see README.md.
+# iPhone-sized virtual address layout. The ten exact build-gated cuts were
+# tested on the Mac through character customization; see README.md for limits.
 
 # ---- Identity ----
 title_id	01008F2005154000

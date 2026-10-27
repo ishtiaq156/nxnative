@@ -544,7 +544,10 @@ class App(unittest.TestCase):
         def pack(name, settings):
             (self.tmp / f'{name}.json').write_text(json.dumps(settings))
             a = types.SimpleNamespace(**vars(self.args)); a.out = str(self.tmp / f'{name}.app'); a.icon = None; a.bundle_id = domain; a.settings = str(self.tmp / f'{name}.json')
-            with mock.patch.object(pack_app, 'sign', lambda *x: None), mock.patch('sys.stdout'): pack_app.pack(a)
+            # The packer now verifies the sealed app after signed executable
+            # inode refresh. Keep this fixture signed: skipping signing makes
+            # the strict verification fail before saved choices are tested.
+            with mock.patch('sys.stdout'): pack_app.pack(a)
             return self.tmp / f'{name}.app'
 
         def run(app, args=(), **env):
