@@ -11,6 +11,17 @@ CUTS = {
     (0x93e8c, 'ea030232', '0a80a052', 'VammManager occupied node area: 1 GB to 64 MB'),
     (0x93fe0, 'ea030232', '0a40a052', 'AllocateAddressRegion: align regions of 1 GB and more to 32 MB'),
   ],
+  # South Park: The Fractured But Whole 1.05, SDK 3.5.1, Snowdrop.
+  # Experimental 3 GiB engine reservation inside the 5 GiB guest block: SDK 3
+  # reserves 1 GiB for AddressRegionManager nodes, and aligns regions of 1 GiB+
+  # to 1 GiB. Shrink both node-area bounds to 62 MiB and align large regions
+  # to 32 MiB. This older SDK uses mov #0x40000000, not the newer SDK's
+  # 0x3fe00000 encodings; the game's separate seven cuts live in its patches.py.
+  '8bb65519bc6399ab432e0ba7cdb16e2b': [
+    (0x8cc60, 'e9030232', '097ca052', 'SDK 3 AddressRegionManager: node-area upper bound 1 GiB to 62 MiB'),
+    (0x8ccf4, 'ea030232', '0a7ca052', 'SDK 3 AddressRegionManager: occupied node-area length 1 GiB to 62 MiB'),
+    (0x8ce48, 'ea030232', '0a40a052', 'SDK 3 AllocateAddressRegion: align 1 GiB+ regions to 32 MiB'),
+  ],
   # Xenoblade Chronicles 3 2.2.1, SDK 12.3.9: the same AddressRegionManager
   # constructor and size-class alignment as Engage's SDK 12.3.7. Its cut 4 GB
   # malloc reservation must fit the 4.375 GB alias region on iOS.
