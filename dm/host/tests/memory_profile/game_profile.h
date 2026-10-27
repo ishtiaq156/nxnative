@@ -8,6 +8,9 @@
 #define DM_GAME_MEM_USED UINT64_C(0x00200000)
 #define DM_GAME_SYS_RESOURCE UINT64_C(0x02000000)
 #define DM_GAME_PROGRAM_ID UINT64_C(0)
+// Keep this synthetic fixture in step with game.py's generated profile keys.
+// Zero exercises the default alias-space-derived StandardAllocator cap.
+#define DM_GAME_STDALLOC_CAP UINT64_C(0)
 #ifndef DM_GAME_MEM_MAP_LIMIT
 #define DM_GAME_MEM_MAP_LIMIT 1
 #endif

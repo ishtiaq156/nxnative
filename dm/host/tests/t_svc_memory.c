@@ -31,6 +31,12 @@ static module_t test_modules[2];
 module_t *g_mod = test_modules;
 int g_nmod;
 struct dm_flags g_flag;
+// The production SVC dispatcher registers address-region observation gates
+// from a constructor. This standalone SVC test has no guest gate dispatcher:
+// the callbacks are not invoked by its synthetic SVC calls.
+void gate_obs_set(int id, void (*fn)(uint64_t *regs, int param)) {
+    assert(id > 0 && id < OBS_MAX && fn);
+}
 void hlecount_svc(int num) { (void)num; }
 int svc_thread(int num, uint64_t *regs) { (void)num; (void)regs; return 0; }
 void dm_backtrace(uint64_t fp) { (void)fp; }

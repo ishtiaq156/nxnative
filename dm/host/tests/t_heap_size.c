@@ -22,6 +22,11 @@ static _Noreturn void heap_abort(void);
 module_t *g_mod;
 int g_nmod;
 struct dm_flags g_flag;
+// hle_svc.c now registers SDK address-region observation callbacks from a
+// constructor. This SetHeapSize-only fixture has no rewritten guest gates.
+void gate_obs_set(int id, void (*fn)(uint64_t *regs, int param)) {
+    assert(id > 0 && id < OBS_MAX && fn);
+}
 void hlecount_svc(int num) { (void)num; }
 int svc_thread(int num, uint64_t *regs) { (void)num; (void)regs; return 0; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
