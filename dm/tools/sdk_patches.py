@@ -12,7 +12,7 @@ CUTS = {
     (0x93fe0, 'ea030232', '0a40a052', 'AllocateAddressRegion: align regions of 1 GB and more to 32 MB'),
   ],
   # South Park: The Fractured But Whole 1.05, SDK 3.5.1, Snowdrop.
-  # Experimental 3 GiB engine reservation inside the 5 GiB guest block: SDK 3
+  # Tested 4 GiB engine reservation inside the 5 GiB guest block: SDK 3
   # reserves 1 GiB for AddressRegionManager nodes, and aligns regions of 1 GiB+
   # to 1 GiB. Shrink both node-area bounds to 62 MiB and align large regions
   # to 32 MiB. This older SDK uses mov #0x40000000, not the newer SDK's
