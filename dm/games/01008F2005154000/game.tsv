@@ -14,6 +14,7 @@ app_category	public.app-category.games
 # ---- Versions ----
 build	v327680	1.05	main=df15edaaf603e00cd7d8a01bd05a15c2	subsdk0=6c8a6b30bd5e6ca1206e8b1cdcc93bf7	sdk=8bb65519bc6399ab432e0ba7cdb16e2b
 package	v327680
+shader_versions	v327680
 
 # ---- Files ----
 modules	main subsdk0 sdk
