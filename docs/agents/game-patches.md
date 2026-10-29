@@ -756,6 +756,7 @@ Profile keys (`game.tsv`) whose value changes what the host does, set away from 
 | Key and value | Games |
 |---|---|
 | `enc_thread on` | [Need For Speed™ Hot Pursuit Remastered](../../dm/games/010029B0118E8000/README.md) |
+| `fps_target 30` | [South Park™: The Fractured But Whole™](../../dm/games/01008F2005154000/README.md) |
 | `game_env DOTNET_GCRegionRange=60000000` | [Absolum](../../dm/games/0100A83022A22000/README.md) |
 | `present_snap on` | [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md) |
 | `pso_mtl4 on` | [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md) |
