@@ -289,9 +289,12 @@ def pack(a):
     # away that source app as this build's output: it would replace the original
     # RomFS and destroy the evidence used to identify it. Refuse before touching
     # the existing app's cache key or partial bundle.
+    lexical_out = Path(os.path.abspath(a.out))
     for row in getattr(a, 'romfs_program', None) or []:
         _, sep, src = row.partition('\t')
-        if sep and Path(src).resolve().is_relative_to(out):
+        # Check both path containment and resolved-target containment: symlinks
+        # can lead into the output app or outward from a source path in it.
+        if sep and (Path(os.path.abspath(src)).is_relative_to(lexical_out) or Path(src).resolve().is_relative_to(out)):
             raise SystemExit(f'RomFS program source {src} is inside output app {out}; choose a separate output app')
     key_file = out.with_name(out.name + '.key')
     try:
