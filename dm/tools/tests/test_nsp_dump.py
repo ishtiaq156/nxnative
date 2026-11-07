@@ -73,7 +73,7 @@ class Scan(Base):
         self.assertEqual(pack_dump.scan(d), (TID, {VER: d / f'updates/{VER}'}, {}))
         app, fam = nsp.scan_dump(d)
         self.assertIsNone(fam['base'])
-        self.assertEqual(nsp.nsp_versions(fam, {}), {f'v{VER}': d / f'updates/{VER}'})
+        self.assertEqual(nsp.nsp_versions(fam), {f'v{VER}': d / f'updates/{VER}'})
 
     def test_title_id_of_the_newest_whole_update(self):
         d = self.dump.parent / 'updates2'; version(d / f'updates/{VER}'); (d / f'updates/{VER + 1}/romfs').mkdir(parents=True)
@@ -85,7 +85,7 @@ class Scan(Base):
         self.assertEqual(pack_dump.scan(d), (TID, {}, {}))
         app, fam = nsp.scan_dump(d)
         self.assertEqual((app, fam['base']), (TID, d))
-        self.assertEqual(nsp.nsp_versions(fam, {}), {'v0': None})
+        self.assertEqual(nsp.nsp_versions(fam), {'v0': None})
         (d / 'base/exefs').mkdir(parents=True); (d / 'base/romfs').mkdir(); (d / 'base/exefs/main.npdm').write_bytes(npdm(TID + 0x2000))
         self.assertEqual(pack_dump.scan(d)[0], TID + 0x2000)   # base/ wins
 
@@ -97,8 +97,8 @@ class Scan(Base):
         self.assertEqual(pack_dump.scan(d), (TID, {VER: d / f'updates/{VER}'}, {TID + 0x1001: d / 'dlc/040074a01bf13001/0/base/romfs'}))
         app, fam = nsp.scan_dump(d)
         self.assertIsNone(fam['base'])
-        self.assertEqual(nsp.nsp_versions(fam, {}), {f'v{VER}': d / f'updates/{VER}'})
-        with self.assertRaisesRegex(nsp.BuildError, 'no base game'): nsp.pick_nsps(fam, nsp.nsp_versions(fam, {}), ['v0'])
+        self.assertEqual(nsp.nsp_versions(fam), {f'v{VER}': d / f'updates/{VER}'})
+        with self.assertRaisesRegex(nsp.BuildError, 'no base game'): nsp.pick_nsps(fam, nsp.nsp_versions(fam), ['v0'])
 
     def test_switch2_edition_program(self):   # the update's code names a program of its own (Xenoblade Chronicles 2: 0400E95004038001): the game is the one its DLC belong to, or the one given
         prog = TID + 1
@@ -133,7 +133,7 @@ class Scan(Base):
             fam = nsp.scan_dump(d)[1]
             self.assertIsNone(nsp.scan_dump(d, program=1)[1]['base'])
         self.assertIn(f'v{VER}: program 1 ({ns2:016X}, the Switch 2 Edition)', said)
-        self.assertEqual(sorted(nsp.nsp_versions(fam, {})), ['v0', f'v{VER}'])
+        self.assertEqual(sorted(nsp.nsp_versions(fam)), ['v0', f'v{VER}'])
 
     def test_multi_program_packs_program_0(self):   # programs all of one platform (a launcher and its games): program 0 unless asked
         d = self.dump.parent / 'multi'
@@ -211,7 +211,7 @@ class Main(Base):
         def stop(env, *a): seen.update(env); raise Stop()
         with mock.patch.object(nsp, 'find_repo', return_value=REPO), mock.patch.object(nsp, 'configure_dotnet'), mock.patch.object(nsp, 'WORK_DIR', ''), mock.patch.object(nsp, 'PROD_KEYS', ''), \
              mock.patch.object(nsp, 'check_prereqs', side_effect=stop), mock.patch.object(nsp, 'say', side_effect=said.append), \
-             mock.patch.object(nsp, 'ask', side_effect=AssertionError('asked for something')), mock.patch.object(nsp, 'package_title_reader', side_effect=AssertionError('read a package')):
+             mock.patch.object(nsp, 'ask', side_effect=AssertionError('asked for something')), mock.patch.object(nsp, 'package_reader', side_effect=AssertionError('read a package')):
             with self.assertRaises(Stop): nsp.main(args)
         return Path(seen['DM_ROOT']), said
 
@@ -251,7 +251,7 @@ class Main(Base):
         d, app, edition = self.mixed_programs()
         sys.path.insert(0, str(REPO / 'dm/games')); import game
         actual = game.by_title
-        edition_profile = types.SimpleNamespace(id=f'{edition:016X}', title_id=edition, builds=lambda: {}, words=lambda key: [])
+        edition_profile = types.SimpleNamespace(id=f'{edition:016X}', title_id=edition, builds=dict, words=lambda key: [])
         said = []
         for package, expected in (('v0', app), (f'v{VER}', edition), (None, edition)):
             said.clear()
