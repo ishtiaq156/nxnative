@@ -283,7 +283,14 @@ def swap_by_moves(tmp, out):
 
 
 def pack(a):
-    out = Path(a.out).resolve()
+    lexical_out = Path(os.path.abspath(a.out))
+    # With an indexed original image, a symlinked output .app could resolve
+    # to the signed source app and replace that app even when a leaf source
+    # link points safely outside it. Permit symlinked parent volumes, not an
+    # ambiguous destination-app leaf alias.
+    if getattr(a, 'romfs_program', None) and lexical_out.is_symlink():
+        raise SystemExit(f'unsafe output app symlink: {lexical_out}')
+    out = lexical_out.resolve()
     if out.suffix != '.app': raise SystemExit(f'the output must end in .app: {out}')
     # A leftover staging symlink is not a disposable directory: rmtree would
     # ignore it, then mkdir/copy would follow it into an external source app.
@@ -300,7 +307,6 @@ def pack(a):
     # that changes the signed original or recursively copies the output.
     # Check lexical and resolved paths, including symlinks in both directions,
     # before touching the existing app's cache key or staging area.
-    lexical_out = Path(os.path.abspath(a.out))
     for row in getattr(a, 'romfs_program', None) or []:
         _, sep, src = row.partition('\t')
         if not sep: continue  # indexed_romfs reports malformed mappings below.

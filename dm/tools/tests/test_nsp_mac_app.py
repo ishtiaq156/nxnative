@@ -261,6 +261,57 @@ class PackReuse(unittest.TestCase):
         self.assertFalse(bundled.is_symlink())
         self.assertEqual(pack_app.inventory(original_app), before)
 
+    def test_output_app_symlink_cannot_replace_signed_original_source_app(self):
+        import romfs_image
+        original_files = self.tmp / 'original-files'; original_files.mkdir()
+        (original_files / 'marker').write_bytes(b'original-app-romfs')
+        original_img = self.tmp / 'original.img'; romfs_image.pack(original_files, original_img)
+        original_app = self.tmp / 'Original.app'
+        self.args.romfs = str(original_img)
+        self.args.out = str(original_app)
+        self.pack()  # Disposable, stand-in signed original game app.
+        embedded_img = original_app / 'Contents/Resources/romfs.img'
+        original_key = Path(str(original_app) + '.key').read_bytes()
+
+        external_files = self.tmp / 'independent-image-files'; external_files.mkdir()
+        (external_files / 'marker').write_bytes(b'separate-external-program')
+        external_img = self.tmp / 'external.img'; romfs_image.pack(external_files, external_img)
+        inside_link = original_app / 'Contents/Resources/external-romfs-link.img'
+        inside_link.symlink_to(external_img)
+        original_inventory = pack_app.inventory(original_app)
+        original_bytes = embedded_img.read_bytes()
+        original_info = (original_app / 'Contents/Info.plist').read_bytes()
+
+        alias_app = self.tmp / 'Alias.app'
+        alias_app.symlink_to(original_app, target_is_directory=True)
+        self.args.out = str(alias_app)
+        self.args.romfs = str(self.tmp / 'romfs')  # Selected game must not replace Original.app.
+        self.args.romfs_program = [f'0\t{alias_app / "Contents/Resources/external-romfs-link.img"}']
+        with self.assertRaisesRegex(SystemExit, 'output app.*symlink'):
+            self.pack()  # Old code dereferenced Alias.app and replaced the signed original.
+        self.assertEqual(pack_app.inventory(original_app), original_inventory)
+        self.assertEqual(embedded_img.read_bytes(), original_bytes)
+        self.assertEqual((original_app / 'Contents/Info.plist').read_bytes(), original_info)
+        self.assertEqual(Path(str(original_app) + '.key').read_bytes(), original_key)
+        self.assertFalse((self.tmp / 'Original.app.partial').exists())
+        self.assertFalse(any('--sign' in cmd for cmd in self.commands))
+
+    def test_indexed_original_image_allows_symlinked_parent_volume(self):
+        import romfs_image
+        files = self.tmp / 'external-original-files'; files.mkdir()
+        (files / 'marker').write_bytes(b'external-original-data')
+        original_img = self.tmp / 'external-original.img'; romfs_image.pack(files, original_img)
+        real_parent = self.tmp / 'actual-output-volume'; real_parent.mkdir()
+        volume_link = self.tmp / 'output-volume-link'
+        volume_link.symlink_to(real_parent, target_is_directory=True)
+        self.args.out = str(volume_link / 'Edition.app')
+        self.args.romfs_program = [f'0\t{original_img}']
+        self.pack()  # A symlinked parent volume is not a symlinked destination app.
+        bundled = real_parent / 'Edition.app/Contents/Resources/romfs_programs/0.img'
+        self.assertEqual(bundled.read_bytes(), original_img.read_bytes())
+        self.assertFalse(bundled.is_symlink())
+        self.assert_reused()
+
     def _assert_source_survives_key_temp_alias(self, alias):
         import romfs_image
         self.pack()
