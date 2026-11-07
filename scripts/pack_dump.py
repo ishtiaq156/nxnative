@@ -15,7 +15,8 @@
 #   extract/v<version>/ExeFS/   the newest version's code modules (APFS clones, or copies on another volume)
 #   extract/v<version>/RomFS.img   its RomFS as one image (dm/tools/romfs_image.py: the host's DM_ROMFS, the IPA's romfs.img)
 #   aoc/<index>.img   each DLC's RomFS (index = DLC title ID − base title ID − 0x1000), the host's DM_AOC_DIR
-# A dump has no control data, so there is no control.nacp or icon.jpg beside them, as there is after nx_extract.
+# A dumped Control NCA's control/control.nacp and localized icon_*.dat, when present, become control.nacp and icon.jpg in the extraction;
+# a Switch 2 Edition Program[1] prefers its Acd_1 identity. Dumps without Control data keep working.
 # The title ID is the program ID in program 0's main.npdm (the base's, else the newest update's). A dump that holds only a Switch 2 Edition's own program, without program/ folders, names
 # a program that is not a base title ID (Xenoblade Chronicles 2: 0400E95004038001 for 0100E95004038000): the title ID then comes from the DLC (each DLC's title ID is the game's + 0x1000 + its index), or from --title-id. A repeat run keeps code modules that are the same and an image whose source tree, packer and image are unchanged (romfs_image.py --reuse).
 # Usage: pack_dump.py <dump folder> [--version N] [--program N] [--title-id ID] [--work-dir DIR]   (exit 1 on error)
@@ -177,10 +178,41 @@ def scan(dump, want=None, program=None):
     return app, vers, dlc
 
 
-def pack_version(src, app, out, say=print):   # one program's folder (base_dir, a value of updates) → out/ExeFS and out/RomFS.img
+def control_sources(src):
+    """Choose official extracted Control NCA data, with a legacy loose fallback.
+
+    A Switch 2 Program[1] can have two Control identities: control/ for
+    the original Switch 1 title and control/Acd_1/ for the Edition's own
+    localized title and icon. An existing dump's ordinary control/ is used
+    for all other programs, regardless of whether its control NCA has Acd_1.
+    """
+    ctrl = src / 'control'
+    try: edition = program_id(src / 'exefs/main.npdm') >> 56 == 0x04
+    except (OSError, Error): edition = False
+    variant = ctrl / 'Acd_1' if edition and (ctrl / 'Acd_1/control.nacp').is_file() else ctrl
+    nacp = next((p for p in (variant / 'control.nacp', ctrl / 'control.nacp', src / 'control.nacp') if p.is_file()), None)
+    icons = (variant / 'icon_AmericanEnglish.dat', ctrl / 'icon_AmericanEnglish.dat')
+    icon = next((p for p in icons if p.is_file()), None)
+    if icon is None:
+        icon = next((p for d in (variant, ctrl) if d.is_dir() for p in sorted(d.glob('icon_*.dat')) if p.is_file()), None)
+    if icon is None and (src / 'icon.jpg').is_file(): icon = src / 'icon.jpg'
+    return {'control.nacp': nacp, 'icon.jpg': icon}
+
+
+def copy_control(src, out):
+    """Map official Control NCA NACP/localized JPEGs to nx_extract's layout."""
+    for name, source in control_sources(src).items():
+        dest = out / name
+        if source is None: dest.unlink(missing_ok=True); continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if not dest.is_file() or not filecmp.cmp(source, dest, shallow=False): clone(source, dest)
+
+
+def pack_version(src, app, out, say=print):   # one selected program's folder (base/ or update) → out/ExeFS and out/RomFS.img
     if not (src / 'exefs/main').is_file() or not (src / 'exefs/main.npdm').is_file() or not (src / 'romfs').is_dir(): raise Error(f'{src}: no exefs/main, exefs/main.npdm and romfs')
     if not of_app(pid := program_id(src / 'exefs/main.npdm'), app): raise Error(f'{src}: program ID {pid:016X}, the base is {app:016X}')
     exefs(src / 'exefs', out / 'ExeFS')
+    copy_control(src, out)
     pack(src / 'romfs', out / 'RomFS.img', say)
 
 
