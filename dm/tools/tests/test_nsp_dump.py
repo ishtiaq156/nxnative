@@ -303,10 +303,17 @@ class Main(Base):
 
     def test_missing_edition_profile_surveys_edition_not_original(self):
         d, app, edition = self.mixed_programs()   # the Switch 1 profile exists, but the Edition's does not
+        # This is a missing-profile test even after the Edition profile itself lands.
+        # Explicitly hide only the Edition profile so the test still exercises the
+        # fallback survey rather than depending on upstream's registered profiles.
+        sys.path.insert(0, str(REPO / 'dm/games')); import game
+        actual = game.by_title
         with mock.patch.object(nsp, 'find_repo', return_value=REPO), mock.patch.object(nsp, 'configure_dotnet'), \
              mock.patch.object(nsp, 'WORK_DIR', ''), mock.patch.object(nsp, 'PROD_KEYS', ''), \
              mock.patch.object(nsp, '_importable', return_value=True), mock.patch.object(nsp, 'check_capstone'), \
              mock.patch.object(nsp.shutil, 'which', return_value='/usr/bin/dotnet'), \
+             mock.patch.object(game, 'by_title', side_effect=lambda tid: None if tid == edition else actual(tid)), \
+             mock.patch.object(nsp, 'check_prereqs'), \
              mock.patch.object(nsp, 'same_build', side_effect=AssertionError('must not alias another program')), \
              mock.patch.object(nsp, 'survey', side_effect=Stop()) as survey, self.assertRaises(Stop):
             nsp.main(nsp.parse_args([str(d), '--platform', 'mac-app']))
