@@ -285,17 +285,25 @@ def swap_by_moves(tmp, out):
 def pack(a):
     out = Path(a.out).resolve()
     if out.suffix != '.app': raise SystemExit(f'the output must end in .app: {out}')
-    # An original-program sidecar can come from another signed .app. Never swap
-    # away that source app as this build's output: it would replace the original
-    # RomFS and destroy the evidence used to identify it. Refuse before touching
-    # the existing app's cache key or partial bundle.
+    # An indexed sidecar can come from a signed original .app. Neither the
+    # output nor the packer's .partial / HFS+ .old cleanup or .key write paths
+    # may consume its source. Also never build *inside* a source app or directory:
+    # that changes the signed original or recursively copies the output.
+    # Check lexical and resolved paths, including symlinks in both directions,
+    # before touching the existing app's cache key or staging area.
     lexical_out = Path(os.path.abspath(a.out))
     for row in getattr(a, 'romfs_program', None) or []:
         _, sep, src = row.partition('\t')
-        # Check both path containment and resolved-target containment: symlinks
-        # can lead into the output app or outward from a source path in it.
-        if sep and (Path(os.path.abspath(src)).is_relative_to(lexical_out) or Path(src).resolve().is_relative_to(out)):
-            raise SystemExit(f'RomFS program source {src} is inside output app {out}; choose a separate output app')
+        if not sep: continue  # indexed_romfs reports malformed mappings below.
+        for source in (Path(os.path.abspath(src)), Path(src).resolve()):
+            for dst in (lexical_out, out):
+                mutable = (dst, *(dst.with_name(dst.name + suffix) for suffix in
+                                  ('.partial', '.old', '.key', '.key.partial')))
+                in_mutable = any(source.is_relative_to(p) for p in mutable)
+                output_in_source = source.is_dir() and dst.is_relative_to(source)
+                output_in_source_app = any(dst.is_relative_to(p) for p in source.parents if p.suffix.lower() == '.app')
+                if in_mutable or output_in_source or output_in_source_app:
+                    raise SystemExit(f'RomFS program source {src} overlaps output app {out} (including sources inside output app); choose a separate output app')
     key_file = out.with_name(out.name + '.key')
     try:
         previous = json.loads(key_file.read_text())

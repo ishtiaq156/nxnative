@@ -245,6 +245,75 @@ class PackReuse(unittest.TestCase):
         self.assertEqual(self.key.read_bytes(), original_reuse_key)
         self.assertFalse(app.with_name(app.name + '.partial').exists())
 
+    def test_indexed_image_does_not_allow_output_nested_inside_source_app(self):
+        import romfs_image
+        original = self.tmp / 'source-original'; original.mkdir()
+        (original / 'marker').write_bytes(b'original-only')
+        image = self.tmp / 'original.img'; romfs_image.pack(original, image)
+        self.args.romfs = str(image)
+        self.pack()  # Build a disposable stand-in for the signed original app.
+        app = Path(self.args.out)
+        source_image = app / 'Contents/Resources/romfs.img'
+        original_inventory = pack_app.inventory(app)
+        original_key = self.key.read_bytes()
+        self.args.romfs = str(self.tmp / 'romfs')  # Selected Program1 lives elsewhere.
+        self.args.romfs_program = [f'0\t{source_image}']
+        self.args.out = str(app / 'Contents/Resources/EditionPreview.app')
+        with self.assertRaisesRegex(SystemExit, 'RomFS program source.*overlaps output app'):
+            self.pack()  # Must fail before .partial creation/signing inside the original app.
+        self.assertEqual(pack_app.inventory(app), original_inventory)
+        self.assertEqual((app.with_name(app.name + '.key')).read_bytes(), original_key)
+        self.assertFalse(Path(self.args.out).exists())
+        self.assertFalse(Path(self.args.out + '.partial').exists())
+        self.assertFalse(any('--sign' in c for c in self.commands))
+
+    def test_indexed_original_image_cannot_occupy_pack_cleanup_siblings(self):
+        import romfs_image
+        self.pack()
+        original_key = self.key.read_bytes()
+        for suffix in ('.partial', '.old'):
+            with self.subTest(suffix=suffix):
+                sibling = Path(self.args.out + suffix); sibling.mkdir()
+                original = self.tmp / 'original-source'; original.mkdir(exist_ok=True)
+                (original / 'marker').write_bytes(b'original-program')
+                image = sibling / 'original.img'; romfs_image.pack(original, image)
+                before = image.read_bytes()
+                self.args.romfs_program = [f'0\t{image}']
+                with self.assertRaisesRegex(SystemExit, 'RomFS program source.*overlaps output app'):
+                    self.pack()  # Must not delete staging / HFS+ fallback source data.
+                self.assertEqual(image.read_bytes(), before)
+                self.assertEqual(self.key.read_bytes(), original_key)
+                self.assertFalse(any('--sign' in c for c in self.commands))
+                shutil.rmtree(sibling)
+
+    def test_indexed_source_directory_cannot_contain_output_app(self):
+        original = self.tmp / 'original-files'; original.mkdir()
+        (original / 'marker').write_bytes(b'original-program')
+        self.args.romfs_program = [f'0\t{original}']
+        self.args.out = str(original / 'EditionPreview.app')
+        before = pack_app.inventory(original)
+        with self.assertRaisesRegex(SystemExit, 'RomFS program source.*overlaps output app'):
+            self.pack()  # Never recursively copy a source into its own generated output.
+        self.assertEqual(pack_app.inventory(original), before)
+        self.assertFalse(Path(self.args.out + '.partial').exists())
+
+    def test_indexed_image_cannot_be_a_pack_cache_or_cache_partial_file(self):
+        import romfs_image
+        self.pack()
+        original = self.tmp / 'original-files'; original.mkdir()
+        (original / 'marker').write_bytes(b'original-program')
+        for suffix in ('.key', '.key.partial'):
+            with self.subTest(suffix=suffix):
+                image = Path(self.args.out + suffix)
+                romfs_image.pack(original, image)
+                before = image.read_bytes()
+                self.args.romfs_program = [f'0\t{image}']
+                with self.assertRaisesRegex(SystemExit, 'RomFS program source.*overlaps output app'):
+                    self.pack()  # A reuse key and its atomic temp cannot be input images.
+                self.assertEqual(image.read_bytes(), before)
+                self.assertFalse(any('--sign' in c for c in self.commands))
+                image.unlink()
+
     def test_reject_invalid_indexed_romfs_before_pack(self):
         original = self.tmp / 'original'; original.mkdir()
         for rows in ([f'0\t{original}', f'00\t{original}'], [f'256\t{original}'], [f'-1\t{original}'], ['0'], [f'0\t{self.tmp / "absent"}']):
