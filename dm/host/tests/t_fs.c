@@ -75,12 +75,26 @@ int main(void) {
     setenv("DM_ROMFS", rom, 1); setenv("DM_ROMFS_OVERLAY", overlay, 1); CHECK(h_fs_MountRom("rom", NULL, 0) == RES_OK, "mount RomFS with two layers (base + overlay)");
     size_t rom_cache = 0; CHECK(h_fs_QueryRomCacheIdx(&rom_cache, 0) == RES_OK && rom_cache == 0x1000, "SDK 19: the cache size overload with a program index");
     CHECK(h_fs_MountRomIdx("rom2", 0, NULL, 0) == RES_OK && read_fs("rom2:/data/base", got, sizeof got) && !strcmp(got, "only-base"), "SDK 19: MountRom with a program index mounts the RomFS");
+    // BrentRosen #1639: a companion's indexed mount selects its own read-only
+    // backing, and cannot silently read the selected program on a missing index.
+    uint64_t indexed_h;
+    setenv("DM_ROMFS_PROGRAM_0", overlay, 1);
+    CHECK(h_fs_MountRomIdx("original", 0, NULL, 0) == RES_OK && read_fs("original:/data/over", got, sizeof got) && !strcmp(got, "only-overlay"), "index 0 resolves the companion's original RomFS");
+    CHECK(h_fs_OpenFile(&indexed_h, "original:/data/over", MODE_WRITE) == RES_FAIL, "indexed RomFS is read only");
+    CHECK(h_fs_OpenFile(&indexed_h, "original:/data/base", MODE_READ) != RES_OK, "indexed RomFS cannot fall back to selected program");
+    CHECK(h_fs_MountRomIdx("missing", 7, NULL, 0) == RES_TARGET_NOT_FOUND && h_fs_MountRomIdx("negative", -1, NULL, 0) == RES_TARGET_NOT_FOUND, "unmapped or negative program index fails closed");
+    unsetenv("DM_ROMFS_PROGRAM_0");
+    CHECK(h_fs_MountRomIdx("plain", 0, NULL, 0) == RES_OK && read_fs("plain:/data/base", got, sizeof got) && !strcmp(got, "only-base"), "single-program index 0 keeps the original fallback");
     CHECK(read_fs("rom:/data/same", got, sizeof got) && !strcmp(got, "overlay"), "the overlay file wins"); CHECK(read_fs("rom:/data/base", got, sizeof got) && !strcmp(got, "only-base"), "falls back to the base when the overlay lacks the file");
     uint64_t rh; CHECK(h_fs_OpenFile(&rh, "rom:/data/same", MODE_WRITE) == RES_FAIL, "the two-layer mount refuses writes");
     CHECK(read_fs("rom:\\data\\over", got, sizeof got) && !strcmp(got, "only-overlay") && read_fs("rom:\\data\\base", got, sizeof got) && !strcmp(got, "only-base"), "backslashes separate as slashes do, in both layers");
     CHECK(h_fs_OpenFile(&rh, "rom:/data/base", MODE_READ) == RES_OK && rh && !(rh & 15), "a folder file's handle is 16-byte aligned, as a Horizon FileAccessor pointer is (%#llx)", (unsigned long long)rh); h_fs_CloseFile(rh);
     g_nmnt = 0;
     unsetenv("DM_ROMFS_OVERLAY");
+    setenv("DM_ROMFS_PROGRAM_0", overlay, 1); setenv("DM_ROMFS_OVERLAY", rom, 1);
+    CHECK(h_fs_MountRomIdx("rom", 0, NULL, 0) == RES_OK && h_fs_OpenFile(&indexed_h, "rom:/data/base", MODE_READ) != RES_OK,
+          "indexed mount named rom never inherits selected program's overlay");
+    g_nmnt = 0; unsetenv("DM_ROMFS_PROGRAM_0"); unsetenv("DM_ROMFS_OVERLAY");
     {   // game files that are neither a folder nor a file (a stale path, a fifo) stop the rom mount with a FATAL line, in a child so the abort does not end this test
         char gone[1200], fifo[1200], out[1200]; snprintf(gone, sizeof gone, "%s/RomFS", root); snprintf(fifo, sizeof fifo, "%s/fifo", root); snprintf(out, sizeof out, "%s/fatal.txt", root);
         mkfifo(fifo, 0644);

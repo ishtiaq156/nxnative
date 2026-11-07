@@ -176,6 +176,29 @@ class PackReuse(unittest.TestCase):
         self.assertTrue(any('--sign' in c for c in self.commands))
         self.assertTrue(self.key.is_file())
 
+    def test_indexed_romfs_is_portable_and_invalidates_reuse(self):
+        original = self.tmp / 'original'; original.mkdir()
+        (original / 'marker').write_bytes(b'original-program')
+        self.args.romfs_program = [f'0\t{original}']
+        (self.tmp / 'romfs/marker').unlink()   # marker belongs to the original program
+        self.pack(); self.assert_reused()
+        bundled = Path(self.args.out) / 'Contents/Resources/romfs_programs/0/marker'
+        self.assertEqual(bundled.read_bytes(), b'original-program')
+        self.assertFalse(bundled.is_symlink())
+        (original / 'marker').write_bytes(b'changed-original')
+        self.assert_repacked(); self.assertEqual(bundled.read_bytes(), b'changed-original')
+        self.assert_reused()
+        (original / 'new-file').write_bytes(b'additional')
+        self.assert_repacked(); self.assertEqual((bundled.parent / 'new-file').read_bytes(), b'additional')
+
+    def test_reject_invalid_indexed_romfs_before_pack(self):
+        original = self.tmp / 'original'; original.mkdir()
+        for rows in ([f'0\t{original}', f'00\t{original}'], [f'256\t{original}'], [f'-1\t{original}'], ['0'], [f'0\t{self.tmp / "absent"}']):
+            with self.subTest(rows=rows):
+                self.args.romfs_program = rows
+                with self.assertRaisesRegex(SystemExit, 'RomFS program'):
+                    self.pack()
+
     def test_retargeted_input_symlink_repacks(self):
         msl = self.tmp / 'msl'
         for name in ('left.metallib', 'right.metallib'): (msl / name).write_bytes(b'same library')
@@ -481,6 +504,24 @@ class App(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in (c / 'Resources/pso').iterdir()), ['applegpu_g14s.mtl4a', 'prebuilt.tsv'])   # the pipeline archive and its stamp only
         self.assertEqual((c / 'Resources/AppIcon.icns').read_bytes()[:4], b'icns')
 
+    def test_launcher_uses_indexed_original_with_own_marker(self):
+        with tempfile.TemporaryDirectory(dir=TEST_ROOT) as tmp:
+            root = Path(tmp); selected = root / 'selected'; original = root / 'original'
+            selected.mkdir(); original.mkdir()
+            (selected / 'selected-only').write_text('companion')
+            marker = original / 'region_common/audio/edward.bfsar'; marker.parent.mkdir(parents=True)
+            marker.write_bytes(b'original')
+            app = root / 'Companion.app'
+            a = types.SimpleNamespace(**vars(self.args)); a.out = str(app); a.romfs = str(selected)
+            a.romfs_program = [f'0\t{original}']
+            with contextlib.redirect_stdout(io.StringIO()): pack_app.pack(a)
+            p = self.launch(app=app); p.communicate(timeout=30)
+            self.assertEqual(p.returncode, 7)
+            run = self.host_run()
+            self.assertEqual(run['DM_ROMFS'], str(app.resolve() / 'Contents/Resources/romfs'))
+            self.assertEqual(run['DM_ROMFS_PROGRAM_0'], str(app.resolve() / 'Contents/Resources/romfs_programs/0'))
+            self.assertEqual(plistlib.loads((app / 'Contents/Info.plist').read_bytes())['DMTitleID'], TID)
+
     def test_pipeline_pair_tables(self):   # the pipeline prebuild reads them beside DM_NVN_SHMAP: without them it builds nothing, though every shader library is there
         dm = self.app / 'Contents/Resources/dm'
         self.assertEqual((dm / 'shader_pairs.tsv').read_text(), 'vertex-key\tpixel-key\n')
@@ -771,7 +812,7 @@ class Script(unittest.TestCase):
         with mock.patch.object(nsp, 'run', fake_run), mock.patch.object(nsp, 'PROG', self.prog), mock.patch.object(nsp, 'chain_of', lambda repo: '0123456789ab'), \
              mock.patch.object(nsp, 'mac_gpu_arch', lambda *a: 'applegpu_g14s'), mock.patch.object(nsp, 'say', self.said.append):
             nsp.mac_app(sys.executable, REPO, out, 0x01008CF01BAAC000, tmp, tmp / 'ex', tmp / 'patched', tmp / 'dmhost', tmp / 'font', tmp / 'shader/cache' if gfx == 'nvn' else tmp / 'shader',
-                        kw.get('aoc'), gfx, 'en-US', g, 'Game', '1.0.0', 'org.nxnative.01008cf01baac000', None, kw.get('sign', ''), {}, tmp, gpus=kw.get('gpus', ''))
+                        kw.get('aoc'), gfx, 'en-US', g, 'Game', '1.0.0', 'org.nxnative.01008cf01baac000', None, kw.get('sign', ''), {}, tmp, gpus=kw.get('gpus', ''), romfs_programs=kw.get('romfs_programs'))
         self.pso_cmd = next((c for c in ran if c[1].endswith('pso_offline.py')), None)   # before the packer
         self.settings_cmd = next(c for c in ran if c[1].endswith('dm/games/settings.py'))
         c = ran[-1]; return {c[i]: c[i + 1] for i in range(3, len(c) - 1) if c[i].startswith('--')}, tmp
@@ -792,6 +833,27 @@ class Script(unittest.TestCase):
         self.assertEqual((self.settings_env['SETTINGS_PLATFORM'], self.settings_env['GFXAPI'], self.settings_env['DM_LANG']), ('mac', 'nvn', 'en-US'))
         o, tmp = self.pack_cmd('vulkan', aoc=Path('/x/aoc'), sign='Developer ID Application: X (T)')
         self.assertEqual((o['--msl'], o['--aoc'], o['--sign']), (str(tmp / 'shader/vk'), '/x/aoc', 'Developer ID Application: X (T)'))
+
+    def test_indexed_romfs_mac_pack_command_and_version_selection(self):
+        app, edition = 0x010015100B514000, 0x040015100B514001
+        with tempfile.TemporaryDirectory(dir=TEST_ROOT) as d:
+            root = Path(d) / 'updates/327680/program'
+            original = root / '0/romfs'; original.mkdir(parents=True)
+            selected = root / '1'; (selected / 'romfs').mkdir(parents=True)
+            picks = {'v327680': (None, selected)}
+            with mock.patch.object(nsp.pack_dump, 'pid_of', return_value=app):
+                sources = nsp.dump_indexed_romfs(picks, 'v327680', app, edition)
+            self.assertEqual(sources, {0: original})
+            self.assertEqual(nsp.dump_indexed_romfs(picks, 'v327680', app, app), {})
+            with mock.patch.object(nsp.pack_dump, 'pid_of', return_value=edition), self.assertRaisesRegex(nsp.BuildError, 'does not match original'):
+                nsp.dump_indexed_romfs(picks, 'v327680', app, edition)
+            with mock.patch.object(nsp.pack_dump, 'pid_of', return_value=app):
+                original.rename(root / 'orphaned-original')
+                with self.assertRaisesRegex(nsp.BuildError, 'no program 0 RomFS'):
+                    nsp.dump_indexed_romfs(picks, 'v327680', app, edition)
+                (root / 'orphaned-original').rename(original)
+            options, _ = self.pack_cmd('nvn', romfs_programs=sources)
+            self.assertEqual(options['--romfs-program'], f'0\t{original}')
 
     def test_pso_archive(self):   # an NVN game with shader pairs: its pipeline archive for this Mac's GPU, made by pso_offline.py, goes into the app
         tmp = Path(tempfile.mkdtemp(dir=TEST_ROOT)); self.addCleanup(shutil.rmtree, tmp)

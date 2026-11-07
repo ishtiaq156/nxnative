@@ -205,7 +205,8 @@ def selected_inputs(a):
     for name in ('patched', 'romfs', 'msl', 'tables', 'font', 'aoc', 'pso'):
         p = getattr(a, name)
         if p and not (rfs.Path(p).is_dir() if name == 'romfs' else shader_lib.exists(p) if name == 'msl' else Path(p).is_dir()): raise SystemExit(f'no {name} directory at {p}')
-    if a.marker and not (rfs.Path(a.romfs) / a.marker).exists(): raise SystemExit(f'no RomFS at {a.romfs} (missing {a.marker})')
+    if a.marker and not any((rfs.Path(root) / a.marker).exists() for root in [a.romfs, *indexed_romfs(a).values()]):
+        raise SystemExit(f'no RomFS at {a.romfs} (missing {a.marker}, including indexed programs)')
     mods = sorted({p for pat in MODULE_FILES for p in Path(a.patched).glob(pat) if not detritus(p.name)})
     if not any(p.name.endswith('.patched.bin') for p in mods): raise SystemExit(f'no rewritten module in {a.patched}')
     for p in mods:
@@ -224,6 +225,25 @@ def selected_inputs(a):
     for p in files:
         if not p.is_file(): raise SystemExit(f'no input file at {p}')
     return mods, msls, pso, tables, pairs, fonts, files
+
+
+def indexed_romfs(a):
+    """Read-only program index → source directory, adapted from BrentRosen #1639.
+
+    The index is the original application program index, not the selected
+    executable's title ID. It never participates in the app's signing identity.
+    """
+    result = {}
+    for row in getattr(a, 'romfs_program', None) or []:
+        index, separator, src = row.partition('\t')
+        if not separator or not index.isdecimal() or not 0 <= int(index) < 256:
+            raise SystemExit(f'invalid RomFS program mapping: {row}')
+        n = int(index)
+        source = Path(src).resolve()
+        if n in result or not source.is_dir():
+            raise SystemExit(f'duplicate RomFS program index or missing directory: {row}')
+        result[n] = source
+    return result
 
 
 def replace_app(tmp, out):
@@ -270,6 +290,7 @@ def pack(a):
         a = argparse.Namespace(**vars(a))
         for name in ('out', 'host', 'patched', 'romfs', 'msl', 'tables', 'font', 'aoc', 'pso', 'pso_pairs', 'env_file', 'settings', 'icon', 'html'):
             if getattr(a, name): setattr(a, name, str(Path(getattr(a, name)).resolve()))
+        companions = indexed_romfs(a)
         mods, msls, pso, tables, pairs, fonts, files = selected_inputs(a)
         # --program: the other programs of a game of several programs (index, rewritten modules, RomFS, shader libraries, tables, offline pages; tab-separated), which go in beside the first's as one app
         programs = []
@@ -288,7 +309,7 @@ def pack(a):
         minos = min_os(a.host)
         sources = [Path(__file__).resolve(), HERE / 'launcher.c', HERE.parent / 'host/romfs_image.h', HERE.parent / 'host/save_sync.c', HERE.parent / 'host/save_sync.h', HERE.parent / 'tools/romfs.py'] + swift_sources()
         inputs = {'options': vars(a), 'files': [(str(p), p.stat().st_mode, digest(p), os.readlink(p) if p.is_symlink() else None) for p in files + sources],
-                  'trees': [(p, inventory(Path(p))) for p in (a.romfs, a.aoc, a.html, *(str(x[1]) for x in programs), *(str(x[3]) for x in programs)) if p and Path(p).exists()],
+                  'trees': [(p, inventory(Path(p))) for p in (a.romfs, a.aoc, a.html, *(str(x[1]) for x in programs), *(str(x[3]) for x in programs), *(str(d) for d in companions.values())) if p and Path(p).exists()],
                   'tools': [[str(c), c.stat().st_mode, c.stat().st_size, c.stat().st_mtime_ns, c.stat().st_ctime_ns, run([c, '--version']).strip()] for c in (clang, swiftc)] + [
                             str(sdk), run(['xcrun', '--sdk', 'macosx', '--show-sdk-version']).strip(),
                             str(codesign), codesign.stat().st_mode, digest(codesign), minos]}
@@ -306,7 +327,7 @@ def pack(a):
     for d in (mac, dm / 'font'): d.mkdir(parents=True)
     romfs, msl, aoc = Path(a.romfs), Path(a.msl), Path(a.aoc) if a.aoc else None
     # each source is probed on its own, as they may lie on different volumes; cp -c copies what it cannot clone, so a probe decides only the free-space check and the step line
-    trees, lists = {'romfs': romfs, 'aoc': aoc}, {'mods': mods, 'msl': msls, 'pso': pso}
+    trees, lists = {'romfs': romfs, 'aoc': aoc, **{f'program{n}': p for n, p in companions.items()}}, {'mods': mods, 'msl': msls, 'pso': pso}
     clone = {k: bool(d) and can_clone(d, res) for k, d in trees.items()} | {k: bool(ps) and can_clone(ps[0], res) for k, ps in lists.items()}
     if is_chain_library(msl): clone['msl'] = False   # copy_msl writes it, which the free-space check below counts
     need = sum(tree_bytes(d) for k, d in trees.items() if d and not clone[k]) + sum(p.stat().st_size for k, ps in lists.items() if not clone[k] for p in ps)
@@ -326,6 +347,9 @@ def pack(a):
     if aoc: step('add-on content'); copy([aoc], res / 'aoc', clone['aoc'])
     if pso: step('pipeline archive'); (res / 'pso').mkdir(); copy(pso, res / 'pso', clone['pso'])
     step('game files'); copy([romfs], res / ('romfs.img' if romfs.is_file() else 'romfs'), clone['romfs'])
+    for n, source in companions.items():
+        step(f'RomFS program {n}'); (res / 'romfs_programs').mkdir(exist_ok=True)
+        copy([source], res / 'romfs_programs' / str(n), clone[f'program{n}'])
     if a.html and Path(a.html).is_dir(): copy([Path(a.html)], res / 'html', False)   # the offline pages, beside the RomFS where the host looks for them (hle_web.c)
     # The other programs: p<N>/ (RomFS, offline pages), msl/p<N>/<library>, dm/p<N>/ (modules, tables), and the table of them all, which the launcher makes DM_PROGRAMS (launcher.c, hle_oe.c): @R@ Resources, @C@ Contents, @S@ the app's Application Support folder
     if programs:
@@ -379,6 +403,7 @@ def parse(argv):
     ap.add_argument('--pso', help='the pipeline archive made offline for this Mac (pso_offline.py --platform macos output: <arch>.mtl4a, prebuilt.tsv)')
     ap.add_argument('--pso-pairs', help='pso_pairs.tsv for a profile that has none (the shader split\'s copy)')
     ap.add_argument('--html', help='the offline HTML pages (nx_extract --html), which go beside the RomFS')
+    ap.add_argument('--romfs-program', action='append', help='another program\'s read-only RomFS: index and source directory, tab-separated (Mac only)')
     ap.add_argument('--program', action='append', help='another program of a game of several programs: index, rewritten modules, RomFS, Mac shader libraries, tables, offline pages (tab-separated)')
     ap.add_argument('--env-file', help='environment switches baked in (Resources/dm/env.txt)')
     ap.add_argument('--settings', help='the game\'s launcher settings (dm/games/settings.py output; Resources/dm/launcher.json, which the Mac front end reads)')
