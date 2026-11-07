@@ -191,6 +191,23 @@ class PackReuse(unittest.TestCase):
         (original / 'new-file').write_bytes(b'additional')
         self.assert_repacked(); self.assertEqual((bundled.parent / 'new-file').read_bytes(), b'additional')
 
+    def test_indexed_original_image_is_portable_and_invalidates_reuse(self):
+        import romfs_image
+        original = self.tmp / 'original'; original.mkdir()
+        (original / 'marker').write_bytes(b'original-only')
+        img = self.tmp / 'original.img'; romfs_image.pack(original, img)
+        self.args.romfs_program = [f'0\t{img}']
+        self.pack(); self.assert_reused()
+        bundled = Path(self.args.out) / 'Contents/Resources/romfs_programs/0.img'
+        self.assertEqual(bundled.read_bytes(), img.read_bytes())
+        self.assertFalse((bundled.parent / '0').exists())
+        (original / 'marker').write_bytes(b'changed-original'); romfs_image.pack(original, img)
+        self.assert_repacked(); self.assertEqual(bundled.read_bytes(), img.read_bytes())
+        self.assert_reused()
+        img.write_bytes(b'invalid image')
+        with self.assertRaisesRegex(SystemExit, 'RomFS program'):
+            self.pack()
+
     def test_reject_invalid_indexed_romfs_before_pack(self):
         original = self.tmp / 'original'; original.mkdir()
         for rows in ([f'0\t{original}', f'00\t{original}'], [f'256\t{original}'], [f'-1\t{original}'], ['0'], [f'0\t{self.tmp / "absent"}']):
@@ -521,6 +538,24 @@ class App(unittest.TestCase):
             self.assertEqual(run['DM_ROMFS'], str(app.resolve() / 'Contents/Resources/romfs'))
             self.assertEqual(run['DM_ROMFS_PROGRAM_0'], str(app.resolve() / 'Contents/Resources/romfs_programs/0'))
             self.assertEqual(plistlib.loads((app / 'Contents/Info.plist').read_bytes())['DMTitleID'], TID)
+
+    def test_launcher_uses_indexed_original_image_with_own_marker(self):
+        import romfs_image
+        with tempfile.TemporaryDirectory(dir=TEST_ROOT) as tmp:
+            root = Path(tmp); selected = root / 'selected'; original = root / 'original'
+            selected.mkdir(); original.mkdir()
+            (selected / 'selected-only').write_text('companion')
+            marker = original / 'region_common/audio/edward.bfsar'; marker.parent.mkdir(parents=True)
+            marker.write_bytes(b'original')
+            image = root / 'original.img'; romfs_image.pack(original, image)
+            app = root / 'CompanionImage.app'
+            a = types.SimpleNamespace(**vars(self.args)); a.out = str(app); a.romfs = str(selected)
+            a.romfs_program = [f'0\t{image}']
+            with contextlib.redirect_stdout(io.StringIO()): pack_app.pack(a)
+            p = self.launch(app=app); p.communicate(timeout=30)
+            self.assertEqual(p.returncode, 7)
+            run = self.host_run()
+            self.assertEqual(run['DM_ROMFS_PROGRAM_0'], str(app.resolve() / 'Contents/Resources/romfs_programs/0.img'))
 
     def test_pipeline_pair_tables(self):   # the pipeline prebuild reads them beside DM_NVN_SHMAP: without them it builds nothing, though every shader library is there
         dm = self.app / 'Contents/Resources/dm'
@@ -854,6 +889,30 @@ class Script(unittest.TestCase):
                 (root / 'orphaned-original').rename(original)
             options, _ = self.pack_cmd('nvn', romfs_programs=sources)
             self.assertEqual(options['--romfs-program'], f'0\t{original}')
+
+    def test_explicit_original_image_replaces_missing_program0_only_with_correct_app_identity(self):
+        import romfs_image
+        app, edition = 0x010015100B514000, 0x040015100B514001
+        with tempfile.TemporaryDirectory(dir=TEST_ROOT) as d:
+            root = Path(d); programs = root / 'updates/327680/program'
+            original = programs / '0'; (original / 'exefs').mkdir(parents=True)
+            selected = programs / '1'; (selected / 'romfs').mkdir(parents=True)
+            source = root / 'original-files'; source.mkdir(); (source / 'distinct').write_text('original')
+            bundle = root / 'Original.app'; resource = bundle / 'Contents/Resources'; resource.mkdir(parents=True)
+            img = resource / 'romfs.img'; romfs_image.pack(source, img)
+            plist = bundle / 'Contents/Info.plist'
+            plist.write_bytes(plistlib.dumps({'DMTitleID': f'{app:016X}'}))
+            picks = {'v327680': (None, selected)}
+            with mock.patch.object(nsp.pack_dump, 'pid_of', return_value=app):
+                with self.assertRaisesRegex(nsp.BuildError, 'no program 0 RomFS'):
+                    nsp.dump_indexed_romfs(picks, 'v327680', app, edition)
+                override = nsp.requested_indexed_romfs([f'0\t{img}'], app)
+                self.assertEqual(nsp.dump_indexed_romfs(picks, 'v327680', app, edition, original_romfs=override[0]), {0: img.resolve()})
+                options, _ = self.pack_cmd('nvn', romfs_programs={0: img.resolve()})
+                self.assertEqual(options['--romfs-program'], f'0\t{img.resolve()}')
+                plist.write_bytes(plistlib.dumps({'DMTitleID': f'{edition:016X}'}))
+                with self.assertRaisesRegex(nsp.BuildError, 'title ID'):
+                    nsp.requested_indexed_romfs([f'0\t{img}'], app)
 
     def test_pso_archive(self):   # an NVN game with shader pairs: its pipeline archive for this Mac's GPU, made by pso_offline.py, goes into the app
         tmp = Path(tempfile.mkdtemp(dir=TEST_ROOT)); self.addCleanup(shutil.rmtree, tmp)

@@ -67,6 +67,37 @@ static int modules_present(const char *dm) {   // the packer's inventory detects
     return 1;
 }
 
+// Does a validated DMROMFS1 image contain the path named by the game's marker?
+// An indexed original RomFS may be an image rather than a directory. Search its
+// sorted index directly without unpacking or reading the multi-GB file contents.
+static int image_has_path(const char *path, const char *rel) {
+    romfs_img *m = romfs_image_open(path);
+    if (!m) return 0;
+    uint64_t k = 0; int found = 1;
+    while (rel && *rel) {
+        while (*rel == '/') rel++;
+        if (!*rel) break;
+        const char *end = strchr(rel, '/'); if (!end) end = rel + strlen(rel);
+        size_t len = (size_t)(end - rel);
+        const img_ent *d = &m->e[k];
+        if (d->type) { found = 0; break; }
+        uint64_t lo = d->a, hi = d->a + d->b; found = 0;
+        while (lo < hi) {
+            uint64_t mid = lo + (hi - lo) / 2;
+            const img_ent *e = &m->e[mid];
+            size_t n = e->nlen < len ? e->nlen : len;
+            int cmp = memcmp(m->names + e->name, rel, n);
+            if (!cmp) cmp = (e->nlen > len) - (e->nlen < len);
+            if (!cmp) { k = mid; found = 1; break; }
+            if (cmp < 0) lo = mid + 1; else hi = mid;
+        }
+        if (!found) break;
+        rel = end;
+    }
+    romfs_image_close(m);
+    return found;
+}
+
 static void mkdirs(const char *path) {   // mkdir -p
     char p[PATH_MAX]; snprintf(p, sizeof p, "%s", path);
     for (char *s = p + 1; *s; s++) if (*s == '/') { *s = 0; mkdir(p, 0755); *s = '/'; }
@@ -179,11 +210,15 @@ int main(int argc, char **argv) {
     } else {
         snprintf(p, sizeof p, "%s/%s", romfs, marker); valid_romfs = !stat(p, &st);
         // A companion's marker may live only in the original program's RomFS
-        // (BrentRosen #1639). Scan just the packaged, indexed directories.
+        // (BrentRosen #1639). Scan the packaged indexed directories and images.
         if (!valid_romfs && !stat(romfs, &st) && S_ISDIR(st.st_mode))
             for (unsigned i = 0; i < 256 && !valid_romfs; i++) {
                 snprintf(p, sizeof p, "%s/romfs_programs/%u/%s", res, i, marker);
                 valid_romfs = !stat(p, &st);
+                if (!valid_romfs) {
+                    snprintf(p, sizeof p, "%s/romfs_programs/%u.img", res, i);
+                    if (!stat(p, &st) && S_ISREG(st.st_mode)) valid_romfs = image_has_path(p, marker);
+                }
             }
     }
     if (access(host, X_OK) || !valid_romfs || !modules_present(dm)) {
@@ -219,6 +254,13 @@ int main(int argc, char **argv) {
         char key[64]; snprintf(key, sizeof key, "DM_ROMFS_PROGRAM_%u", i);
         snprintf(p, sizeof p, "%s/romfs_programs/%u", res, i);
         if (!stat(p, &st) && S_ISDIR(st.st_mode)) setenv(key, p, 0);
+        else {
+            snprintf(p, sizeof p, "%s/romfs_programs/%u.img", res, i);
+            if (!stat(p, &st) && S_ISREG(st.st_mode)) {
+                if (!image_has_path(p, "")) { alert(name, "The bundled indexed original RomFS image is invalid: pack the app again from a complete image."); return 1; }
+                setenv(key, p, 0);
+            }
+        }
     }
     snprintf(p, sizeof p, "%s/msl", res); setenv("DM_MSL_DIR", p, 0);
     snprintf(p, sizeof p, "%s/font", dm); setenv("DM_FONT_DIR", p, 0);

@@ -114,6 +114,10 @@ int main(void) {
         memcpy(img, "DMROMFS1", 8); memcpy(img + 8, hd, sizeof hd); memcpy(img + 32, "helloxy", 7); memcpy(img + 39, e, sizeof e); memcpy(img + 39 + sizeof e, "dataabc", 7);
         char ip[1100]; snprintf(ip, sizeof ip, "%s/rom.img", root); FILE *f = fopen(ip, "wb"); fwrite(img, 1, sizeof img, f); fclose(f);
         setenv("DM_ROMFS", ip, 1); unsetenv("DM_ROMFS_OVERLAY"); CHECK(h_fs_MountRom("rom", NULL, 0) == RES_OK, "mount the image");
+        setenv("DM_ROMFS_PROGRAM_0", ip, 1);
+        CHECK(h_fs_MountRomIdx("original-img", 0, NULL, 0) == RES_OK && read_fs("original-img:/data/a", got, sizeof got) && !strcmp(got, "hello"),
+              "index 0 can mount a separately supplied RomFS image read-only");
+        unsetenv("DM_ROMFS_PROGRAM_0");
         CHECK(read_fs("rom:/data/a", got, sizeof got) && !strcmp(got, "hello"), "reads a file"); CHECK(read_fs("rom:/data/../data/c", got, sizeof got) && !strcmp(got, "xy"), "reads the next file, through ..");
         uint64_t h; size_t n = 0; int64_t sz = 0; char b[16] = {0};
         CHECK(h_fs_OpenFile(&h, "rom:/data/a", MODE_READ) == RES_OK && h_fs_ReadFile(&n, h, 3, b, 10) == RES_OK && n == 2 && !memcmp(b, "lo", 2), "a read stops at the end of the file (got %zu)", n);
