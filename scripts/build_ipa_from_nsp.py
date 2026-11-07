@@ -816,7 +816,7 @@ def check_versions_aarch64(dirs, logs, g, name):   # every extracted version of 
                       f'; game profile {g.id} registers {", ".join(other)}: pack {"that version" if len(other) == 1 else "one of those versions"} (-p / PACKAGE) with its update in the folder' if other else '')
 
 
-def survey(nsp_dir, app, fam, keys, repo, py, env):
+def survey(nsp_dir, app, fam, keys, repo, py, env, package=None):
     work = nsp_dir / f'{app:016X}_survey'; logs, ex = work / 'logs', work / 'extract'
     say(f'no game profile for {app:016X}: surveying first')
     nup, dump = fam.get('nup'), fam.get('dump')
@@ -826,7 +826,7 @@ def survey(nsp_dir, app, fam, keys, repo, py, env):
         PROG.stage('survey: build nx_extract')
         nx = build_nx_extract(repo, work, logs, env)
     ups = sorted(fam['updates'], key=lambda u: u[0] or 0)
-    upd = ups[-1][1] if ups else None
+    upd = next((p for v, p in ups if f'v{v}' == package), None) if package else (ups[-1][1] if ups else None)
     tmp = work / 'extract.partial'; rmtree(tmp)
     def listed():   # files in the manifest so far
         try: return {'done': (tmp / 'romfs_manifest.tsv').read_bytes().count(b'\n'), 'unit': 'files'}
@@ -1327,6 +1327,19 @@ def scan_dump(dump, want=None, program=None):
             pid = pack_dump.pid_of(d)
             say(f'{name}: program {d.name}' + (f' ({pid:016X}{", the Switch 2 Edition" if pack_dump.switch2(pid) and not pack_dump.switch2(app) else ""})' if pid is not None else ''))
     return app, {'base': base, 'updates': sorted(vers.items()), 'dlc': [(tid, None, roms) for tid, roms in dlc.items()], 'dump': True}
+
+
+def selected_dump_program(fam, package=None):
+    """The NPDM program ID of the extracted version actually requested.
+
+    The latest update can contain Program 1 while v0 contains Program 0.
+    Keep the application's ID for DLC and update selection, but choose the
+    game profile by the version being built, not an unrelated newer program.
+    """
+    if package == 'v0': src = fam['base']
+    elif package: src = next((p for v, p in fam['updates'] if f'v{v}' == package), None)
+    else: src = max(fam['updates'], default=(0, fam['base']))[1]
+    return pack_dump.pid_of(src) if src is not None else None
 
 
 def extract_dump(ex, name, src, app):   # one version of a dump folder (src: base/ or updates/<version>/) into the layout extract makes; the code modules and the image are kept while unchanged
@@ -2979,13 +2992,15 @@ def main(args=None):
         if PROGRAM_INDEX:   # one program of a multi-program application, packed as a game of its own: its title ID names the profile and the build folder
             app += PROGRAM_INDEX; say(f'program {PROGRAM_INDEX} of the application: title ID {app:016X}')
         fam = decompress_nsz(nsp_dir, app, fam, keys, env, work_dir(args))
+    own = selected_dump_program(fam, args.package or PACKAGE) if dump == 'folder' else None
+    profile_id = own if own is not None else app   # a dumped Program 1 has its own save/profile ID, while DLC still belongs to app
     force =args.provisional or PROVISIONAL   # a provisional profile even when dm/games has one (testing the guesses)
     g, provisional, shadowed = None if force else gamemod.by_title(app), False, False
-    if dump == 'folder' and not force:   # a dump folder packs one program (a Switch 2 Edition's Switch 2 one): a profile of that program's own comes before the application's
-        pids = [pack_dump.pid_of(d) for _, d in sorted(fam['updates'], reverse=True)] + ([pack_dump.pid_of(fam['base'])] if fam['base'] else [])
-        own = next((p for p in pids if p is not None), None)
-        if own is not None and own != app and (alt := gamemod.by_title(own)): g = alt; say(f'program {own:016X} has a game profile of its own')
-    alias = None if force or g else same_build(nsp_dir, app, fam, keys, repo, env)   # a known build under another title ID: packed from a profile derived from that build's
+    if dump == 'folder' and own is not None and own != app and not force:
+        g = gamemod.by_title(own)   # never run Program 1 with Program 0's profile and save/cache identity
+        if g: say(f'program {own:016X} has a game profile of its own')
+        else: say(f'program {own:016X} has no profile: surveying it separately from application {app:016X}')
+    alias = None if force or g or (dump == 'folder' and own is not None and own != app) else same_build(nsp_dir, app, fam, keys, repo, env)   # no cross-program build-ID profile reuse
     if alias:
         g = alias[0]; say(f'no game profile for {app:016X}, but its main build {alias[2]} is game profile {g.id}\'s {alias[1]} ({g.get("name", "")}) under another title ID')
     if g is None:   # no game profile: survey, then (unless --survey-only) a provisional profile outside the repository and a best-effort IPA
@@ -2993,20 +3008,22 @@ def main(args=None):
         if missing: raise BuildError(f'the current Python ({sys.executable}) is missing modules: {", ".join(missing)}')
         check_capstone()
         if not shutil.which('dotnet', path=env['PATH']): raise BuildError('dotnet not found (.NET SDK 10)')
-        pdir = profile_folder(args, nsp_dir, app)
-        if not (args.survey_only or SURVEY_ONLY): rmtree(derived_key(pdir / f'{app:016X}'))
-        if (pdir / f'{app:016X}' / 'game.tsv').exists() and not (args.survey_only or SURVEY_ONLY):
-            say(f'no game profile for {app:016X}: reusing the provisional profile from the last run (delete it to survey again)')
+        pdir = profile_folder(args, nsp_dir, profile_id)
+        if not (args.survey_only or SURVEY_ONLY): rmtree(derived_key(pdir / f'{profile_id:016X}'))
+        if (pdir / f'{profile_id:016X}' / 'game.tsv').exists() and not (args.survey_only or SURVEY_ONLY):
+            say(f'no game profile for {profile_id:016X}: reusing the provisional profile from the last run (delete it to survey again)')
         else:
-            facts = survey(nsp_dir, app, fam, keys, repo, py, env)
+            facts = (survey(nsp_dir, profile_id, fam, keys, repo, py, env, package=args.package or PACKAGE)
+                     if dump == 'folder' and (args.package or PACKAGE)
+                     else survey(nsp_dir, profile_id, fam, keys, repo, py, env))
             if args.survey_only or SURVEY_ONLY: return
-            facts['survey'] = str(nsp_dir / f'{app:016X}_survey' / 'survey.md')
-            write_profile(pdir / f'{app:016X}', app, facts)
+            facts['survey'] = str(nsp_dir / f'{profile_id:016X}_survey' / 'survey.md')
+            write_profile(pdir / f'{profile_id:016X}', profile_id, facts)
         # the profile folder joins the search path of game.py, which the shader tools, make and build_ipa.sh all use (DM_GAMES_DIR)
         os.environ['DM_GAMES_DIR'] = env['DM_GAMES_DIR'] = os.pathsep.join([str(pdir)] + [d for d in os.environ.get('DM_GAMES_DIR', '').split(os.pathsep) if d and d != str(pdir)])
-        if force and gamemod.by_title(app):   # dm/games has the game too: every tool (game.py, make, build_ipa.sh) takes the provisional profile first (DM_GAMES_FIRST)
+        if force and gamemod.by_title(profile_id):   # dm/games has the game too: every tool (game.py, make, build_ipa.sh) takes the provisional profile first (DM_GAMES_FIRST)
             os.environ['DM_GAMES_FIRST'] = env['DM_GAMES_FIRST'] = '1'; shadowed = True
-        g, provisional = gamemod.load(f'{app:016X}'), True
+        g, provisional = gamemod.load(f'{profile_id:016X}'), True
         say('[RED] provisional game profile: values guessed from the survey, the game may not boot; bring it up per docs/agents after packing')
     say(f'game profile: {g.id}{" (provisional: " + str(g.dir) + ")" if provisional else ""}')
     if seen_shaders and not g.table('shader_seen.tsv').is_file(): raise BuildError(f'--seen-shaders: game profile {g.id} has no list of the shaders its playtests used ({g.table("shader_seen.tsv")}): build the whole map, without this option')
@@ -3076,8 +3093,8 @@ def main(args=None):
         versions, dirs = [pkg_ver], {pkg_ver: dirs[pkg_ver]}
     reg = g   # the profile as registered (a derived build reports what it lacks against it)
     if derived:   # the derived profile goes where a provisional one would, and every tool (game.py, make, build_ipa.sh) takes it first (DM_GAMES_FIRST)
-        pdir = profile_folder(args, nsp_dir, app)
-        disp = derive_profile(g, pdir / g.id, pkg_ver, dirs[pkg_ver], g.words('modules'), app)
+        pdir = profile_folder(args, nsp_dir, profile_id)
+        disp = derive_profile(g, pdir / g.id, pkg_ver, dirs[pkg_ver], g.words('modules'), profile_id)
         os.environ['DM_GAMES_DIR'] = env['DM_GAMES_DIR'] = os.pathsep.join([str(pdir)] + [d for d in os.environ.get('DM_GAMES_DIR', '').split(os.pathsep) if d and d != str(pdir)])
         os.environ['DM_GAMES_FIRST'] = env['DM_GAMES_FIRST'] = '1'
         g = gamemod.load(g.id)

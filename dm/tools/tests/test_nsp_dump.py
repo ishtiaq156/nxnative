@@ -6,6 +6,7 @@ import shutil
 import struct
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -228,6 +229,73 @@ class Main(Base):
     def test_title_id_must_match(self):
         with mock.patch.object(nsp, 'find_repo', return_value=REPO), mock.patch.object(nsp, 'configure_dotnet'), self.assertRaisesRegex(nsp.BuildError, 'which holds'):
             nsp.main(nsp.parse_args([str(self.dump), '--title-id', '0100000000010000']))
+
+    def mixed_programs(self):
+        app, edition = 0x010015100B514000, 0x040015100B514001
+        d = self.dump.parent / 'mixed'
+        version(d / 'base/program/0', tid=app, marker='original-base')
+        version(d / f'updates/{VER}/program/0', tid=app, marker='original-update')
+        version(d / f'updates/{VER}/program/1', tid=edition, marker='edition-update')
+        return d, app, edition
+
+    def test_selected_dump_profile_uses_requested_version(self):
+        d, app, edition = self.mixed_programs()
+        got_app, fam = nsp.scan_dump(d)
+        self.assertEqual(got_app, app)   # update/DLC application identity stays original
+        self.assertEqual(nsp.selected_dump_program(fam), edition)
+        self.assertEqual(nsp.selected_dump_program(fam, f'v{VER}'), edition)
+        self.assertEqual(nsp.selected_dump_program(fam, 'v0'), app)
+        self.assertIsNone(nsp.selected_dump_program(fam, 'v999999'))
+
+    def test_explicit_v0_uses_original_profile_not_latest_edition(self):
+        d, app, edition = self.mixed_programs()
+        sys.path.insert(0, str(REPO / 'dm/games')); import game
+        actual = game.by_title
+        edition_profile = types.SimpleNamespace(id=f'{edition:016X}', title_id=edition, builds=lambda: {}, words=lambda key: [])
+        said = []
+        for package, expected in (('v0', app), (f'v{VER}', edition), (None, edition)):
+            said.clear()
+            args = [str(d), '--platform', 'mac-app'] + (['--package', package] if package else [])
+            with mock.patch.object(nsp, 'find_repo', return_value=REPO), mock.patch.object(nsp, 'configure_dotnet'), \
+                 mock.patch.object(nsp, 'WORK_DIR', ''), mock.patch.object(nsp, 'PROD_KEYS', ''), \
+                 mock.patch.object(game, 'by_title', side_effect=lambda tid: edition_profile if tid == edition else actual(tid)), \
+                 mock.patch.object(nsp, 'nsp_versions', side_effect=Stop()), mock.patch.object(nsp, 'say', side_effect=said.append), \
+                 self.assertRaises(Stop):
+                nsp.main(nsp.parse_args(args))
+            self.assertIn(f'game profile: {expected:016X}', said, f'--package {package}: {said}')
+
+    def test_missing_edition_profile_surveys_edition_not_original(self):
+        d, app, edition = self.mixed_programs()   # the Switch 1 profile exists, but the Edition's does not
+        with mock.patch.object(nsp, 'find_repo', return_value=REPO), mock.patch.object(nsp, 'configure_dotnet'), \
+             mock.patch.object(nsp, 'WORK_DIR', ''), mock.patch.object(nsp, 'PROD_KEYS', ''), \
+             mock.patch.object(nsp, '_importable', return_value=True), mock.patch.object(nsp, 'check_capstone'), \
+             mock.patch.object(nsp.shutil, 'which', return_value='/usr/bin/dotnet'), \
+             mock.patch.object(nsp, 'same_build', side_effect=AssertionError('must not alias another program')), \
+             mock.patch.object(nsp, 'survey', side_effect=Stop()) as survey, self.assertRaises(Stop):
+            nsp.main(nsp.parse_args([str(d), '--platform', 'mac-app']))
+        self.assertEqual(survey.call_args.args[1], edition)
+
+    def test_provisional_edition_profile_has_its_own_title_id(self):
+        d, app, edition = self.mixed_programs()
+        with mock.patch.object(nsp, 'find_repo', return_value=REPO), mock.patch.object(nsp, 'configure_dotnet'), \
+             mock.patch.object(nsp, 'WORK_DIR', ''), mock.patch.object(nsp, 'PROD_KEYS', ''), \
+             mock.patch.object(nsp, '_importable', return_value=True), mock.patch.object(nsp, 'check_capstone'), \
+             mock.patch.object(nsp.shutil, 'which', return_value='/usr/bin/dotnet'), \
+             mock.patch.object(nsp, 'survey', return_value={}) as survey, \
+             mock.patch.object(nsp, 'write_profile', side_effect=Stop()) as writer, self.assertRaises(Stop):
+            nsp.main(nsp.parse_args([str(d), '--platform', 'mac-app', '--provisional']))
+        self.assertEqual(survey.call_args.args[1], edition)
+        self.assertEqual(writer.call_args.args[1], edition)
+        self.assertEqual(writer.call_args.args[0].name, f'{edition:016X}')
+        self.assertEqual(writer.call_args.args[2]['survey'], str(d / f'{edition:016X}_survey/survey.md'))
+
+    def test_dump_survey_obeys_explicit_base_package(self):
+        d, app, edition = self.mixed_programs()
+        _, fam = nsp.scan_dump(d)
+        for request, expected in (('v0', d / 'base/program/0'), (f'v{VER}', d / f'updates/{VER}/program/1')):
+            with mock.patch.object(nsp, 'survey_dump', side_effect=Stop()) as survey_dump, self.assertRaises(Stop):
+                nsp.survey(d, app, fam, None, REPO, sys.executable, {}, package=request)
+            self.assertEqual(survey_dump.call_args.args[0], expected)
 
     def surveyed(self, d):   # the real survey on a dump with no profile: this NPDM is a 32-bit program's, which stops it right after the code modules and the manifest
         with mock.patch.object(nsp, 'find_repo', return_value=REPO), mock.patch.object(nsp, 'configure_dotnet'), mock.patch.object(nsp, 'WORK_DIR', ''), mock.patch.object(nsp, 'PROD_KEYS', ''), \

@@ -184,6 +184,13 @@
 
 ## Launcher metadata
 
+### An extracted update chooses the wrong program's profile
+
+- **Symptom:** an extracted multi-program game selects the Switch 2 Program 1 executable but silently uses the original Program 0 profile when Program 1 has none. Conversely, `--package v0` may use the latest update's Program 1 profile for Program 0's executable.
+- **Cause:** the dump packer's outer application ID is correct for update and DLC discovery, but profile selection used the newest update regardless of `--package` and fell back to the application's profile when the selected program's own profile was missing. A provisional or derived profile could inherit that outer ID, losing the selected program's identity.
+- **Fix:** inspect the selected version's NPDM before choosing its profile. For a different program, use only its matching profile or survey a provisional profile under its own ID; derive from that same ID. Keep the original application ID for update and DLC selection, and keep Program 0's `v0` profile separate from the Edition's latest update. The separate [Mac launcher identity fix #1586](https://github.com/seedds/nxnative/pull/1586) is needed to select this Program 1 identity for a standalone Mac app's saves and pipeline cache.
+- **Found on:** synthetic Program 0/Program 1 dump tests for [Super Mario Bros. Wonder Nintendo Switch 2 Edition](https://github.com/seedds/nxnative/pull/1563), based on [dump Program 1 support #1253](https://github.com/seedds/nxnative/pull/1253). No existing game files or saves were modified.
+
 ### No Game language row in an app packed from a NUP or a dump
 
 - **Symptom:** the settings of a Mac app or IPA packed from a NUP or a dump folder have no Game language row, while `DM_LANG` in the environment changes the language. Reported on [Donkey Kong Bananza](../../dm/games/040074A01BF12000/README.md) ([NX2Apple#619](https://github.com/LNPANDY/NX2Apple/issues/619), [#659](https://github.com/LNPANDY/NX2Apple/issues/659); the reporters' packed files were not available).
