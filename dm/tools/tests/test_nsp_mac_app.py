@@ -208,6 +208,33 @@ class PackReuse(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, 'RomFS program'):
             self.pack()
 
+    def test_indexed_original_image_cannot_be_overwritten_as_the_output_app(self):
+        import romfs_image
+        source = self.tmp / 'original-files'; source.mkdir()
+        (source / 'marker').write_bytes(b'original-game')
+        original_image = self.tmp / 'original.img'; romfs_image.pack(source, original_image)
+        self.args.romfs = str(original_image)
+        self.pack()  # A temporary stand-in app is now the explicitly supplied original app.
+        app = Path(self.args.out)
+        original_in_app = app / 'Contents/Resources/romfs.img'
+        original_bytes = original_in_app.read_bytes()
+        original_info = (app / 'Contents/Info.plist').read_bytes()
+        original_reuse_key = self.key.read_bytes()
+
+        selected = self.tmp / 'selected-files'; selected.mkdir()
+        (selected / 'marker').write_bytes(b'companion-game')
+        selected_image = self.tmp / 'selected.img'; romfs_image.pack(selected, selected_image)
+        self.args.romfs = str(selected_image)
+        self.args.romfs_program = [f'0\t{original_in_app}']
+        self.args.title_id = '04008CF01BAAC001'
+        self.args.bundle_id = 'org.nxnative.04008cf01baac001'
+        with self.assertRaisesRegex(SystemExit, 'RomFS program source.*inside output app'):
+            self.pack()  # Must refuse before swap or invalidation of the original app's reuse key.
+        self.assertEqual(original_in_app.read_bytes(), original_bytes)
+        self.assertEqual((app / 'Contents/Info.plist').read_bytes(), original_info)
+        self.assertEqual(self.key.read_bytes(), original_reuse_key)
+        self.assertFalse(app.with_name(app.name + '.partial').exists())
+
     def test_reject_invalid_indexed_romfs_before_pack(self):
         original = self.tmp / 'original'; original.mkdir()
         for rows in ([f'0\t{original}', f'00\t{original}'], [f'256\t{original}'], [f'-1\t{original}'], ['0'], [f'0\t{self.tmp / "absent"}']):

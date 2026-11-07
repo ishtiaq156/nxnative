@@ -285,6 +285,14 @@ def swap_by_moves(tmp, out):
 def pack(a):
     out = Path(a.out).resolve()
     if out.suffix != '.app': raise SystemExit(f'the output must end in .app: {out}')
+    # An original-program sidecar can come from another signed .app. Never swap
+    # away that source app as this build's output: it would replace the original
+    # RomFS and destroy the evidence used to identify it. Refuse before touching
+    # the existing app's cache key or partial bundle.
+    for row in getattr(a, 'romfs_program', None) or []:
+        _, sep, src = row.partition('\t')
+        if sep and Path(src).resolve().is_relative_to(out):
+            raise SystemExit(f'RomFS program source {src} is inside output app {out}; choose a separate output app')
     key_file = out.with_name(out.name + '.key')
     try:
         previous = json.loads(key_file.read_text())
