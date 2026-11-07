@@ -33,7 +33,7 @@
 # unless ALLOW_OTHER_METAL / --allow-other-metal. Issue #242 reported corruption with another compiler; the cause is still unconfirmed.
 # Python 3.12+ is required for bounded archive mappings inside images. The Python running this file needs lz4, capstone 5.x, fonttools and zbic (and backports.zstd before Python 3.14); also needed: Xcode, xcodegen, .NET SDK 10, zstd. SPIRV-Cross is the in-repo build. A first run takes 2 (Metroid Dread) to 10 minutes (Breath of the Wild: 5 of them the shader split), longer when shader libraries must be compiled; a repeat run with unchanged inputs takes about 20 s (Metroid Dread), mostly packing the IPA. Key values are never printed.
 # The console shows one line per stage ([k/n] stage, with a bar, done/total, percent, elapsed time and ETA where the work can be counted); the tools' own output goes only to logs/ (PROGRESS / --progress). --progress json writes newline-delimited JSON events to stdout.
-import ast, collections, contextlib, ctypes, errno, getpass, hashlib, importlib.util, json, os, re, shlex, shutil, struct, subprocess, sys, tempfile, threading, time, types
+import ast, collections, contextlib, ctypes, errno, getpass, hashlib, importlib.util, json, os, plistlib, re, shlex, shutil, struct, subprocess, sys, tempfile, threading, time, types
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "dm/tools"))
 import romfs as rfs
@@ -2813,7 +2813,38 @@ def mac_app(py, repo, out, app, work, game, patched, host, font, msl, aoc, gfx, 
     PROG.end(f'{out.name}, ' + ('reused (inputs unchanged)' if unchanged else amount(tree_size(out)[1], 'B')))
 
 
-def dump_indexed_romfs(picks, version, app, selected_id):
+def requested_indexed_romfs(rows, app):
+    """Explicit Mac-only original-program source, never inferred from Program 1.
+
+    A DMROMFS1 image does not encode a title ID. Require the original app's
+    Info.plist beside a packaged image, or the original program's NPDM beside
+    a raw RomFS directory, to guard against substituting the wrong game.
+    """
+    result = {}
+    for row in rows or []:
+        index, sep, path = row.partition('\t')
+        if not sep or index != '0' or not path or 0 in result:
+            raise BuildError(f'--romfs-program expects one original-program index 0 and its path, tab-separated: {row}')
+        src = Path(os.path.expanduser(path)).resolve()
+        if src.is_dir():
+            if pack_dump.pid_of(src.parent) != app:
+                raise BuildError(f'{src}: original RomFS folder needs an adjacent exefs/main.npdm with title ID {app:016X}')
+        elif src.is_file():
+            try: rfs.Image(src)   # Complete DMROMFS1 index; no game data is unpacked.
+            except (OSError, ValueError) as e: raise BuildError(f'{src}: invalid original RomFS image: {e}') from e
+            contents = src.parent.parent
+            if src.name != 'romfs.img' or src.parent.name != 'Resources' or contents.name != 'Contents' or contents.parent.suffix != '.app':
+                raise BuildError(f'{src}: supply the original title\'s packaged Contents/Resources/romfs.img to verify its DMTitleID')
+            try: title = plistlib.loads((contents / 'Info.plist').read_bytes()).get('DMTitleID')
+            except (OSError, ValueError, TypeError) as e: raise BuildError(f'{src}: cannot read original app Info.plist: {e}') from e
+            if title != f'{app:016X}':
+                raise BuildError(f'{src}: original app title ID {title!r} does not match application {app:016X}')
+        else: raise BuildError(f'{src}: no original RomFS directory/image')
+        result[0] = src
+    return result
+
+
+def dump_indexed_romfs(picks, version, app, selected_id, original_romfs=None):
     """Use only the selected version's matching original-program RomFS.
 
     A selected extracted companion has its own program ID for its save/cache;
@@ -2821,15 +2852,18 @@ def dump_indexed_romfs(picks, version, app, selected_id):
     another update's program-0 files or associate an unrelated title ID.
     Adapted from BrentRosen #1639 (73c7984d).
     """
-    if selected_id is None or selected_id == app: return {}
+    if selected_id is None or selected_id == app:
+        if original_romfs is not None: raise BuildError('--romfs-program requires a selected companion program')
+        return {}
     src = picks[version][1] or picks[version][0]
-    if src is None or src.parent.name != 'program' or src.name == '0': return {}
+    if src is None or src.parent.name != 'program' or src.name == '0': return {0: original_romfs} if original_romfs is not None else {}
     original = src.parent / '0'
     romfs = original / 'romfs'
-    if not romfs.is_dir():
-        raise BuildError(f'{src}: selected companion has no program 0 RomFS in the same version; cannot package its indexed original files')
     if pack_dump.pid_of(original) != app:
-        raise BuildError(f'{romfs}: program index 0 does not match original application {app:016X}')
+        raise BuildError(f'{original}: program index 0 does not match original application {app:016X}')
+    if original_romfs is not None: return {0: original_romfs}  # explicitly supplied and independently title-checked
+    if not romfs.is_dir():
+        raise BuildError(f'{src}: selected companion has no program 0 RomFS in the same version; supply --romfs-program with a verified original app image')
     return {0: romfs}
 
 
@@ -2875,6 +2909,7 @@ def parse_args(argv):
     ap.add_argument('--motion', action=argparse.BooleanOptionalAction, help='pass a gyro controller\'s motion (on iOS also the phone\'s own) to games that read it; --no-motion builds with DM_MOTION=0, for when motion misbehaves (default: the MOTION setting, on)')
     ap.add_argument('--survey-only', action='store_true', help='a game with no profile: only the survey, no provisional profile and no IPA')
     ap.add_argument('--program', type=int, default=None, help='a multi-program application (Super Mario 3D All-Stars): pack program N of the NSPs as a game of its own, title ID = the application\'s + N (default: the PROGRAM_INDEX setting, 0; a game whose profile lists programs packs them all as one from program 0: this is for bring-up; a dump folder: pack its program/<N>/ folders, by default a Switch 2 Edition\'s Switch 2 program, else program 0)')
+    ap.add_argument('--romfs-program', action='append', help='Mac extracted companion only: explicit original Program 0 RomFS, tab-separated as 0<TAB>source. Source must be the original app\'s Contents/Resources/romfs.img (DMTitleID checked) or a folder whose sibling exefs/main.npdm names the original application. No implicit Program1 fallback')
     ap.add_argument('--allow-damaged', action='store_true', help='a damaged NSP (files failing the NCA hash check), or files whose bytes do not start as their names promise (a .zs file that is no zstd stream): write them as read and go on instead of stopping')
     ap.add_argument('--allow-shader-regressions', action='store_true', help='shaders that translated in the game\'s previous build and fail with the current translation chain: '
                     'pack the app without them instead of stopping')
@@ -2997,6 +3032,8 @@ def main(args=None):
     if nsp_dir.is_file(): nsp_dir = nsp_dir.parent
     global NSP_FOLDER; NSP_FOLDER = nsp_dir
     dump = 'nup' if nup else 'folder' if dump_folder(nsp_dir) else None   # their files are not encrypted, so they need no keys
+    if args.romfs_program and (dump != 'folder' or not mac):
+        raise BuildError('--romfs-program needs an extracted dump with --platform mac or mac-app; iOS/NSP/NUP indexed RomFS is unchanged')
     keys = None if dump else Path(os.path.expanduser(args.keys or PROD_KEYS or ask('path of prod.keys: ', 'prod.keys (-k)'))).resolve()
     if keys and not keys.is_file(): raise BuildError(f'no such file: {keys}')
     sys.path.insert(0, str(repo / 'dm/games')); import game as gamemod   # game profiles
@@ -3106,7 +3143,9 @@ def main(args=None):
     logs = work / 'logs'
     check_prereqs(env, xlate, mac)
     picks = pick_nsps(fam, have, versions)
-    indexed_romfs = dump_indexed_romfs(picks, pkg_ver, app, profile_id) if dump == 'folder' and mac else {}
+    explicit_romfs = requested_indexed_romfs(args.romfs_program, app) if dump == 'folder' and mac else {}
+    indexed_romfs = dump_indexed_romfs(picks, pkg_ver, app, profile_id, explicit_romfs.get(0)) if dump == 'folder' and mac else {}
+    if explicit_romfs: say(f'original program 0 RomFS explicitly supplied: {explicit_romfs[0]} (original title ID verified; no selected-program alias)')
 
     ex = work / 'extract'; ex.mkdir(parents=True, exist_ok=True); (work / 'tmp').mkdir(exist_ok=True)
     gb = (sum(fam['nup'].tree_bytes(pack_nup.romfs_of(u or b, b)) for b, u in picks.values()) if nup else sum(tree_size((u or b) / 'romfs')[1] for b, u in picks.values()) if dump else extract_bytes(picks, False)) / 2**30 + 6   # every merged image is complete, including on APFS; shader cache + slack
