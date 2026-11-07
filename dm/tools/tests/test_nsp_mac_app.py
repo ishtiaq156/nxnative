@@ -235,15 +235,77 @@ class PackReuse(unittest.TestCase):
         self.args.romfs_program = [f'0\t{outside_link}']
         with self.assertRaisesRegex(SystemExit, 'RomFS program source.*inside output app'):
             self.pack()  # A link outside the app still targets its internal image.
-        inside_link = app / 'Contents/Resources/link-to-external-original.img'
-        inside_link.symlink_to(original_image)
-        self.args.romfs_program = [f'0\t{inside_link}']
-        with self.assertRaisesRegex(SystemExit, 'RomFS program source.*inside output app'):
-            self.pack()  # The source path is under this app even if the symlink resolves outside.
         self.assertEqual(original_in_app.read_bytes(), original_bytes)
         self.assertEqual((app / 'Contents/Info.plist').read_bytes(), original_info)
         self.assertEqual(self.key.read_bytes(), original_reuse_key)
         self.assertFalse(app.with_name(app.name + '.partial').exists())
+
+    def test_indexed_source_symlink_inside_output_to_external_image_is_safe(self):
+        import romfs_image
+        source = self.tmp / 'original-files'; source.mkdir()
+        (source / 'marker').write_bytes(b'original-only')
+        original_app = self.tmp / 'Original.app'
+        original_res = original_app / 'Contents/Resources'; original_res.mkdir(parents=True)
+        original_img = original_res / 'romfs.img'; romfs_image.pack(source, original_img)
+        original_info = original_app / 'Contents/Info.plist'
+        original_info.write_bytes(plistlib.dumps({'DMTitleID': TID}))
+        before = pack_app.inventory(original_app)
+        self.pack()  # A disposable selected-Program1 destination already exists.
+        app = Path(self.args.out)
+        inside_link = app / 'Contents/Resources/link-to-external-original.img'
+        inside_link.symlink_to(original_img)
+        self.args.romfs_program = [f'0\t{inside_link}']
+        self.pack()  # Resolves and copies the external original before replacing the old app.
+        bundled = app / 'Contents/Resources/romfs_programs/0.img'
+        self.assertEqual(bundled.read_bytes(), original_img.read_bytes())
+        self.assertFalse(bundled.is_symlink())
+        self.assertEqual(pack_app.inventory(original_app), before)
+
+    def _assert_source_survives_key_temp_alias(self, alias):
+        import romfs_image
+        self.pack()
+        app = Path(self.args.out)
+        old_bundle = pack_app.inventory(app)
+        old_key = self.key.read_bytes()
+        source = self.tmp / 'original-files'; source.mkdir()
+        (source / 'marker').write_bytes(b'original-only')
+        original_app = self.tmp / 'Original.app'
+        res = original_app / 'Contents/Resources'; res.mkdir(parents=True)
+        img = res / 'romfs.img'; romfs_image.pack(source, img)
+        (original_app / 'Contents/Info.plist').write_bytes(plistlib.dumps({'DMTitleID': TID}))
+        key_tmp = Path(self.args.out + '.key.partial')
+        if alias == 'symlink': key_tmp.symlink_to(img)
+        else: os.link(img, key_tmp)
+        old_original = pack_app.inventory(original_app)  # A hardlink changes inode ctime at fixture setup.
+        self.args.romfs_program = [f'0\t{img}']
+        with self.assertRaisesRegex(SystemExit, 'unsafe.*key.*partial'):
+            self.pack()  # Repack would otherwise write JSON through the alias over the original image.
+        self.assertEqual(pack_app.inventory(original_app), old_original)
+        self.assertEqual(pack_app.inventory(app), old_bundle)
+        self.assertEqual(self.key.read_bytes(), old_key)
+        self.assertFalse(any('--sign' in cmd for cmd in self.commands))
+
+    def test_indexed_original_image_survives_symlinked_key_temporary(self):
+        self._assert_source_survives_key_temp_alias('symlink')
+
+    def test_indexed_original_image_survives_hardlinked_key_temporary(self):
+        self._assert_source_survives_key_temp_alias('hardlink')
+
+    def test_indexed_original_image_survives_symlinked_app_partial(self):
+        import romfs_image
+        source = self.tmp / 'original-files'; source.mkdir()
+        (source / 'marker').write_bytes(b'original-only')
+        original_app = self.tmp / 'Original.app'
+        res = original_app / 'Contents/Resources'; res.mkdir(parents=True)
+        img = res / 'romfs.img'; romfs_image.pack(source, img)
+        (original_app / 'Contents/Info.plist').write_bytes(plistlib.dumps({'DMTitleID': TID}))
+        old_original = pack_app.inventory(original_app)
+        self.args.romfs_program = [f'0\t{img}']
+        Path(self.args.out + '.partial').symlink_to(original_app, target_is_directory=True)
+        with self.assertRaisesRegex(SystemExit, 'unsafe.*partial'):
+            self.pack()  # rmtree ignores a symlink; subsequent mkdir would follow it.
+        self.assertEqual(pack_app.inventory(original_app), old_original)
+        self.assertFalse(Path(self.args.out).exists())
 
     def test_indexed_image_does_not_allow_output_nested_inside_source_app(self):
         import romfs_image
