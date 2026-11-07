@@ -230,6 +230,16 @@ class PackReuse(unittest.TestCase):
         self.args.bundle_id = 'org.nxnative.04008cf01baac001'
         with self.assertRaisesRegex(SystemExit, 'RomFS program source.*inside output app'):
             self.pack()  # Must refuse before swap or invalidation of the original app's reuse key.
+        outside_link = self.tmp / 'outside-link-to-app-image.img'
+        outside_link.symlink_to(original_in_app)
+        self.args.romfs_program = [f'0\t{outside_link}']
+        with self.assertRaisesRegex(SystemExit, 'RomFS program source.*inside output app'):
+            self.pack()  # A link outside the app still targets its internal image.
+        inside_link = app / 'Contents/Resources/link-to-external-original.img'
+        inside_link.symlink_to(original_image)
+        self.args.romfs_program = [f'0\t{inside_link}']
+        with self.assertRaisesRegex(SystemExit, 'RomFS program source.*inside output app'):
+            self.pack()  # The source path is under this app even if the symlink resolves outside.
         self.assertEqual(original_in_app.read_bytes(), original_bytes)
         self.assertEqual((app / 'Contents/Info.plist').read_bytes(), original_info)
         self.assertEqual(self.key.read_bytes(), original_reuse_key)
