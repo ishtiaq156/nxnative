@@ -285,6 +285,15 @@ def swap_by_moves(tmp, out):
 def pack(a):
     out = Path(a.out).resolve()
     if out.suffix != '.app': raise SystemExit(f'the output must end in .app: {out}')
+    # A leftover staging symlink is not a disposable directory: rmtree would
+    # ignore it, then mkdir/copy would follow it into an external source app.
+    if out.with_name(out.name + '.partial').is_symlink():
+        raise SystemExit(f'unsafe output partial symlink for {out}')
+    key_tmp = out.with_name(out.name + '.key.partial')
+    # write_text would follow a symlink, or truncate every other hardlink to
+    # this inode (possibly the separately supplied original RomFS image).
+    if key_tmp.is_symlink() or (key_tmp.is_file() and key_tmp.stat().st_nlink > 1):
+        raise SystemExit(f'unsafe output key partial alias for {out}')
     # An indexed sidecar can come from a signed original .app. Neither the
     # output nor the packer's .partial / HFS+ .old cleanup or .key write paths
     # may consume its source. Also never build *inside* a source app or directory:
@@ -295,7 +304,15 @@ def pack(a):
     for row in getattr(a, 'romfs_program', None) or []:
         _, sep, src = row.partition('\t')
         if not sep: continue  # indexed_romfs reports malformed mappings below.
-        for source in (Path(os.path.abspath(src)), Path(src).resolve()):
+        lexical_source, resolved_source = Path(os.path.abspath(src)), Path(src).resolve()
+        # A leaf link in the old output app may refer to a genuinely external
+        # original image. indexed_romfs resolves it before staging, so swapping
+        # the output removes only the link, never the original target.
+        safe_external_link = (lexical_source.is_relative_to(lexical_out)
+                              and lexical_source.is_symlink() and resolved_source.is_file()
+                              and not resolved_source.is_relative_to(out))
+        for source in (lexical_source, resolved_source):
+            if source == lexical_source and safe_external_link: continue
             for dst in (lexical_out, out):
                 mutable = (dst, *(dst.with_name(dst.name + suffix) for suffix in
                                   ('.partial', '.old', '.key', '.key.partial')))
@@ -397,9 +414,12 @@ def pack(a):
     step(f'signing ({"ad-hoc" if a.sign == "-" else a.sign})'); sign(tmp, a.sign, codesign)
     had_old = out.exists()
     replace_app(tmp, out)
-    key_tmp = key_file.with_name(key_file.name + '.partial')
     try:
-        key_tmp.write_text(json.dumps({'inputs': key, 'app': inventory(out)}, sort_keys=True) + '\n')
+        # Clear only our stale ordinary temp file; an exclusive create avoids
+        # following a symlink planted between preflight and this write.
+        key_tmp.unlink(missing_ok=True)
+        with key_tmp.open('x', encoding='utf-8') as f:
+            f.write(json.dumps({'inputs': key, 'app': inventory(out)}, sort_keys=True) + '\n')
         key_tmp.replace(key_file)
     except BaseException:
         if had_old: replace_app(tmp, out)
