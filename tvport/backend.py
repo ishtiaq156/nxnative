@@ -28,6 +28,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Optional
 
+import igdb_media
+
 HERE = Path(__file__).resolve().parent
 BUNDLED = (HERE / 'engine.json').is_file()
 REPO = HERE.parent   # the engine: this checkout, or for the app the copy it unpacked (main)
@@ -823,7 +825,8 @@ def prepare_game(game: Game, keys: Optional[Path], team: str, python: str) -> Ga
     return game
 
 
-def generate_project(game: Game, args, team: str, bundle: str, python: str) -> Path:
+def generate_project(game: Game, args, team: str, bundle: str, python: str,
+                     igdb_credentials: tuple[str, str] | None = None) -> Path:
     stage('Generating the Apple TV project')
     restore_tables(game)
     env = profile_env(game)
@@ -832,9 +835,26 @@ def generate_project(game: Game, args, team: str, bundle: str, python: str) -> P
                DM_TVOS='1', DM_COPY_ROMFS='NO', DM_SHOW_FPS='1' if args.fps else '0', DM_ENV_FILE=str(write_env(game, args.mode, args.texture_cap, args.players, args.render_scale, not args.no_thermal_cap, args.fps_target, args.swap_ab_xy, args.swap_ab, args.swap_xy)), DM_BUNDLE_ID=bundle, DM_TEAM_ID=team,
                DM_XCODE_PROJECT_DIR=str(game.build / 'tvport-xcode'), DM_XCODE_DERIVED_DATA=str(game.build / 'tvport-derived'), FONT_PY=python)
     env.update(artwork_env(args))
-    art = args.art or game.icon or args.shelf_art
+    media = igdb_media.Media()
+    if getattr(args, 'use_igdb_media', False):
+        client_id, client_secret = igdb_credentials or (os.environ.get('TVPORT_IGDB_CLIENT_ID', ''), os.environ.get('TVPORT_IGDB_CLIENT_SECRET', ''))
+        try:
+            media = igdb_media.fetch(game.name(), DATA / 'artwork/igdb' / game.title_id,
+                                     client_id, client_secret, getattr(args, 'igdb_game_id', None))
+        except Exception:
+            emit('log', line='IGDB media is unavailable; using selected or game artwork.')
+        if media.game_id:
+            emit('log', line=f'IGDB game {media.game_id}: icon {"found" if media.icon else "unavailable"}, Top Shelf screenshot {"found" if media.shelf else "unavailable"}.')
+        elif not client_id or not client_secret:
+            emit('log', line='IGDB credentials are not set; using selected or game artwork.')
+    if not args.shelf_art and media.shelf:
+        env['DM_TOP_SHELF_ART'] = str(media.shelf)
+    art = args.art or media.icon or game.icon or args.shelf_art
     if art:
         env['DM_ICON'] = str(art)
+    # The lookup is complete; do not pass the Twitch secret to Xcode or game-build tools.
+    env.pop('TVPORT_IGDB_CLIENT_ID', None)
+    env.pop('TVPORT_IGDB_CLIENT_SECRET', None)
     stream(['bash', REPO / 'dm/ios/tools/build_ipa.sh', '--prepare-xcode'], env=env, cwd=REPO)
     return game.build / 'tvport-xcode'
 
@@ -940,6 +960,8 @@ def relocate_build(game: Game) -> Game:
 
 def cmd_build(args) -> None:
     lock = one_build_at_a_time()   # held until this process exits
+    # Keep the secret in this process only, before extraction or Xcode spawn children.
+    igdb_credentials = (os.environ.pop('TVPORT_IGDB_CLIENT_ID', ''), os.environ.pop('TVPORT_IGDB_CLIENT_SECRET', ''))
     game = Game(args.folder)
     team = args.team or known_team()
     if not team:
@@ -964,7 +986,7 @@ def cmd_build(args) -> None:
         emit('log', line={'backed-up': f'{backup["files"]} save files backed up.', 'unchanged': 'The saves on this Mac are already up to date.', 'none': 'No saves on the Apple TV yet.',
                           'unavailable': 'The saves on the Apple TV could not be read, so this build goes ahead without a new backup.',
                           'busy': 'The game kept saving during each copy, so this build goes ahead without a new backup.'}[backup['state']])
-    project = generate_project(game, args, team, bundle, python)
+    project = generate_project(game, args, team, bundle, python, igdb_credentials)
     bundle_shaders(game, project)
     compile_app(game, project, args.device)
     game.save_state(bundle_id=bundle, art=str(args.art) if args.art else None, mode=args.mode, texture_cap=args.texture_cap, render_scale=args.render_scale, source_signature=signature)
@@ -1230,6 +1252,10 @@ def main() -> int:
     build.add_argument('--team')
     build.add_argument('--device')
     build.add_argument('--art', type=Path)
+    build.add_argument('--use-igdb-media', action=argparse.BooleanOptionalAction,
+                       default=os.environ.get('TVPORT_USE_IGDB_MEDIA', '').lower() in ('1', 'true', 'yes'),
+                       help='opt in to IGDB wide art and Top Shelf screenshots; needs TVPORT_IGDB_CLIENT_ID and TVPORT_IGDB_CLIENT_SECRET')
+    build.add_argument('--igdb-game-id', type=int, help='choose an IGDB game when title matching is ambiguous')
     build.add_argument('--mode', choices=('handheld', 'docked'), default='handheld')
     build.add_argument('--texture-cap', type=int, choices=TEXTURE_CAPS, default=512)
     build.add_argument('--render-scale', type=render_scale_arg, default=1.0)

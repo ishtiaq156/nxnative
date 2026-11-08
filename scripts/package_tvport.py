@@ -6,7 +6,7 @@
 It writes FOLDER/TVPort.app and FOLDER/TVPort-<version>.zip (FOLDER: tvport/dist). The app carries:
   Contents/Resources/engine.tar.xz   the tracked files of dm/ and scripts/ and LICENSE, as they are in this checkout (uncommitted edits too; engine.json says so)
   Contents/Resources/engine.json     its ID (a digest of those files), commit and shader chain
-  Contents/Resources/backend.py, requirements.txt   tvport/'s, which unpack the engine and make its Python on the first run
+  Contents/Resources/backend.py, igdb_media.py, requirements.txt   tvport/'s, which unpack the engine and make its Python on the first run
   Contents/Helpers/uv                which makes that Python
   Contents/Resources/Licenses/       nxnative's MIT notice, the engine's third-party licenses and uv's
 Only tracked files go in, so nothing a build leaves in the checkout does: a profile's shader tables, extracted game files, keys, built apps. A tracked file that looks like one of
@@ -120,7 +120,7 @@ def main() -> int:
                 cwd=REPO, env=dict(os.environ, COPYFILE_DISABLE='1'))
         info = {'id': engine_id, 'commit': commit, 'dirty': dirty, 'chain': chain, 'files': len(files), 'uv': uv_version, 'made': datetime.now(timezone.utc).isoformat(timespec='seconds')}
         (resources / 'engine.json').write_text(json.dumps(info, indent=1) + '\n')
-        for name in ('backend.py', 'save_import.py', 'requirements.txt'):
+        for name in ('backend.py', 'igdb_media.py', 'save_import.py', 'requirements.txt'):
             shutil.copy2(REPO / 'tvport' / name, resources / name)
         licenses = resources / 'Licenses'
         licenses.mkdir()
