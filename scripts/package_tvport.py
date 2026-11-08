@@ -120,7 +120,7 @@ def main() -> int:
                 cwd=REPO, env=dict(os.environ, COPYFILE_DISABLE='1'))
         info = {'id': engine_id, 'commit': commit, 'dirty': dirty, 'chain': chain, 'files': len(files), 'uv': uv_version, 'made': datetime.now(timezone.utc).isoformat(timespec='seconds')}
         (resources / 'engine.json').write_text(json.dumps(info, indent=1) + '\n')
-        for name in ('backend.py', 'igdb_media.py', 'save_import.py', 'requirements.txt'):
+        for name in ('backend.py', 'eshop_media.py', 'igdb_media.py', 'save_import.py', 'requirements.txt'):
             shutil.copy2(REPO / 'tvport' / name, resources / name)
         licenses = resources / 'Licenses'
         licenses.mkdir()

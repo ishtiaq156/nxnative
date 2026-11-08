@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 import igdb_media
+import eshop_media
 
 HERE = Path(__file__).resolve().parent
 BUNDLED = (HERE / 'engine.json').is_file()
@@ -835,6 +836,14 @@ def generate_project(game: Game, args, team: str, bundle: str, python: str,
                DM_TVOS='1', DM_COPY_ROMFS='NO', DM_SHOW_FPS='1' if args.fps else '0', DM_ENV_FILE=str(write_env(game, args.mode, args.texture_cap, args.players, args.render_scale, not args.no_thermal_cap, args.fps_target, args.swap_ab_xy, args.swap_ab, args.swap_xy)), DM_BUNDLE_ID=bundle, DM_TEAM_ID=team,
                DM_XCODE_PROJECT_DIR=str(game.build / 'tvport-xcode'), DM_XCODE_DERIVED_DATA=str(game.build / 'tvport-derived'), FONT_PY=python)
     env.update(artwork_env(args))
+    eshop_art = None
+    if getattr(args, 'use_eshop_artwork', False) and not args.art:
+        try:
+            eshop_art = eshop_media.fetch(game.artwork_title_id, DATA / 'artwork')
+        except Exception:
+            emit('log', line='eShop banner is unavailable; using selected or game artwork.')
+        if eshop_art:
+            emit('log', line=f'eShop banner: {eshop_art}')
     media = igdb_media.Media()
     if getattr(args, 'use_igdb_media', False):
         client_id, client_secret = igdb_credentials or (os.environ.get('TVPORT_IGDB_CLIENT_ID', ''), os.environ.get('TVPORT_IGDB_CLIENT_SECRET', ''))
@@ -849,7 +858,7 @@ def generate_project(game: Game, args, team: str, bundle: str, python: str,
             emit('log', line='IGDB credentials are not set; using selected or game artwork.')
     if not args.shelf_art and media.shelf:
         env['DM_TOP_SHELF_ART'] = str(media.shelf)
-    art = args.art or media.icon or game.icon or args.shelf_art
+    art = args.art or eshop_art or media.icon or game.icon or args.shelf_art
     if art:
         env['DM_ICON'] = str(art)
     # The lookup is complete; do not pass the Twitch secret to Xcode or game-build tools.
@@ -1252,6 +1261,9 @@ def main() -> int:
     build.add_argument('--team')
     build.add_argument('--device')
     build.add_argument('--art', type=Path)
+    build.add_argument('--use-eshop-artwork', action=argparse.BooleanOptionalAction,
+                       default=os.environ.get('TVPORT_USE_ESHOP_ARTWORK', '').lower() in ('1', 'true', 'yes'),
+                       help='opt in to the eShop landscape banner for backend builds; no credentials needed')
     build.add_argument('--use-igdb-media', action=argparse.BooleanOptionalAction,
                        default=os.environ.get('TVPORT_USE_IGDB_MEDIA', '').lower() in ('1', 'true', 'yes'),
                        help='opt in to IGDB wide art and Top Shelf screenshots; needs TVPORT_IGDB_CLIENT_ID and TVPORT_IGDB_CLIENT_SECRET')
