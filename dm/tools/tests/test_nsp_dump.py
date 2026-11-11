@@ -264,7 +264,7 @@ class Main(Base):
         for package, expected in (('v0', app), (f'v{VER}', edition), (None, edition)):
             said.clear()
             args = [str(d), '--platform', 'mac-app'] + (['--package', package] if package else [])
-            with mock.patch.object(nsp, 'find_repo', return_value=REPO), mock.patch.object(nsp, 'configure_dotnet'), \
+            with mock.patch.object(nsp, 'find_repo', return_value=REPO), \
                  mock.patch.object(nsp, 'WORK_DIR', ''), mock.patch.object(nsp, 'PROD_KEYS', ''), \
                  mock.patch.object(game, 'by_title', side_effect=lambda tid: edition_profile if tid == edition else actual(tid)), \
                  mock.patch.object(nsp, 'nsp_versions', side_effect=Stop()), mock.patch.object(nsp, 'say', side_effect=said.append), \
@@ -279,10 +279,9 @@ class Main(Base):
         # fallback survey rather than depending on upstream's registered profiles.
         sys.path.insert(0, str(REPO / 'dm/games')); import game
         actual = game.by_title
-        with mock.patch.object(nsp, 'find_repo', return_value=REPO), mock.patch.object(nsp, 'configure_dotnet'), \
+        with mock.patch.object(nsp, 'find_repo', return_value=REPO), \
              mock.patch.object(nsp, 'WORK_DIR', ''), mock.patch.object(nsp, 'PROD_KEYS', ''), \
              mock.patch.object(nsp, '_importable', return_value=True), mock.patch.object(nsp, 'check_capstone'), \
-             mock.patch.object(nsp.shutil, 'which', return_value='/usr/bin/dotnet'), \
              mock.patch.object(game, 'by_title', side_effect=lambda tid: None if tid == edition else actual(tid)), \
              mock.patch.object(nsp, 'check_prereqs'), \
              mock.patch.object(nsp, 'same_build', side_effect=AssertionError('must not alias another program')), \
@@ -292,10 +291,9 @@ class Main(Base):
 
     def test_provisional_edition_profile_has_its_own_title_id(self):
         d, app, edition = self.mixed_programs()
-        with mock.patch.object(nsp, 'find_repo', return_value=REPO), mock.patch.object(nsp, 'configure_dotnet'), \
+        with mock.patch.object(nsp, 'find_repo', return_value=REPO), \
              mock.patch.object(nsp, 'WORK_DIR', ''), mock.patch.object(nsp, 'PROD_KEYS', ''), \
              mock.patch.object(nsp, '_importable', return_value=True), mock.patch.object(nsp, 'check_capstone'), \
-             mock.patch.object(nsp.shutil, 'which', return_value='/usr/bin/dotnet'), \
              mock.patch.object(nsp, 'survey', return_value={}) as survey, \
              mock.patch.object(nsp, 'write_profile', side_effect=Stop()) as writer, self.assertRaises(Stop):
             nsp.main(nsp.parse_args([str(d), '--platform', 'mac-app', '--provisional']))
