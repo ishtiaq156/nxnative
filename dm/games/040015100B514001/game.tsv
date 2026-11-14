@@ -37,8 +37,3 @@ shader_note	Super Mario Bros. Wonder Nintendo Switch 2 Edition shaders
 # ---- Guest heap ----
 # SDK 21 requested about 4.94 GiB; the provisional bring-up needed this 10 GiB reservation.
 mem_reserve	0x278000000
-
-# ---- Rendering ----
-# NVN conditional rendering gates AG L shadow-mask clears. Without this, a
-# depth-masked R8 pass clears to black and the world/fountain grade is wrong.
-render_cond	on
